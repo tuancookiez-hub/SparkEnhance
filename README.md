@@ -1,23 +1,20 @@
 # SparkEnhance
 
 > Hover-enhance any text in any Windows app into a numbered agent brief.
-> Sits in the system tray. One hotkey. M3 does the work.
+> Tray app. **Ctrl+Shift+E**. MiniMax-M3 via GMI Cloud.
 
-[![Track 1](https://img.shields.io/badge/MiniMax%20Week-Track%201-blueviolet)](https://www.gmicloud.ai/minimax-week)
-[![Built with M3](https://img.shields.io/badge/M3-MiniMax--M3-ff6b9d)](https://www.gmicloud.ai)
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
-[![Single 6.7MB exe](https://img.shields.io/badge/binary-6.7MB-success)](build/sparkenhance.exe)
+![Icon](build/appicon.png)
 
-## What it does
+## What it is
 
-SparkEnhance is a system-tray app for Windows that turns messy text into
-a structured, agent-ready brief. It runs MiniMax-M3 hosted on GMI Cloud.
+A standalone Windows app that turns messy text into a structured, agent-ready
+brief using MiniMax-M3 on GMI Cloud. Sits in the system tray, listens for
+the global hotkey, reads the current selection, and writes the enhanced
+version back to the clipboard.
 
-- 🖱️ Select text in **any** app — Notepad, Word, Chrome, VS Code, Slack
-- ⌨️ Press **Ctrl+Shift+E** anywhere
-- ✨ A small floating bar appears near the cursor
-- 📋 The enhanced brief is on your clipboard
-- (Optionally) auto-pastes into the original app
+## Demo (3-min)
+
+> Built with **Wails v2** (Go + WebView2). Backend in Go, UI in React/TypeScript.
 
 ## What the rewrite looks like
 
@@ -29,126 +26,113 @@ a structured, agent-ready brief. It runs MiniMax-M3 hosted on GMI Cloud.
 > the existing `users` table and issues a session JWT.
 >
 > 1. Add a `POST /api/v1/login` endpoint that validates user credentials
-> 2. Hash incoming passwords with bcrypt and compare against the `password_hash` column
+> 2. Hash incoming passwords with bcrypt and compare against the
+>    `password_hash` column
 > 3. Issue a JWT in the response when credentials are valid
 > 4. Return `401` with a clear error message when credentials are wrong
 > 5. Write 3 pytest cases covering happy path, bad password, missing user
 > 6. Add rate limiting (5 attempts per minute per IP)
-> 7. Update the OpenAPI spec with the new endpoint
-
-## Why M3 (Track 1)
-
-Track 1 is "agents that hold a plan, coding tools that finish the job,
-research assistants that fact check themselves." SparkEnhance is a
-**prompt-engineering layer** that uses M3 specifically because M3 is the
-frontier-reasoning model — it's the one most likely to:
-
-- Hold a coherent plan structure (Goal / Scope / Requirements / Gates)
-- Resist adding goals the user didn't mention (the "anti-patterns" gate)
-- Produce concrete, agent-receivable nouns (table names, endpoints, file paths)
-
-Every output is forced through a `system` prompt that mandates the
-production-grade brief structure. The quality score (40→78/100) reflects
-how well the output conforms.
+> 7. Update the OpenAPI spec with the new endpoint and example requests
 
 ## Install
 
-### Pre-built binary (Windows)
+### Pre-built binary (Windows 10/11 x64)
 
 ```bash
 # Download sparkenhance.exe from the latest release.
-# Double-click to launch. A console prompt asks for your GMI API key on
-# first run; it is then stored in %APPDATA%\SparkEnhance\config.json.
+# Double-click to launch. The setup window opens on first run.
 ```
+
+> SparkEnhance requires **WebView2** which is preinstalled on Windows 10
+> (since 2021) and Windows 11.
 
 ### From source
 
 ```bash
 git clone https://github.com/tuancookiez-hub/sparkenhance.git
 cd sparkenhance
-go build -ldflags "-H windowsgui" -o build/sparkenhance.exe ./cmd/sparkenhance/
-./build/sparkenhance.exe
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+wails build -platform windows/amd64
+# Output: build/bin/sparkenhance.exe
 ```
 
 ### Get a GMI Cloud API key
 
 1. Create a free account at <https://console.gmicloud.ai>
 2. Go to API Keys → create a new key
-3. Paste it into SparkEnhance on first launch (or set `GMI_API_KEY` env)
+3. Paste it into SparkEnhance on first launch
+4. Pick the model: **MiniMax-M3** (default), **MiniMax-M3.5-Speculative**, or
+   any other model on the GMI base URL
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│ System tray (Win32 NOTIFYICONDATAW)             │  ~1.2KB
-├─────────────────────────────────────────────────┤
-│ Message-only window (HWND_MESSAGE)              │
-│  ├── Global hotkey: RegisterHotKey(Ctrl+Shift+E)│
-│  ├── wndProc: WM_HOTKEY → triggerEnhance()      │
-│  └── WM_USER+1: tray menu (Quit)                │
-├─────────────────────────────────────────────────┤
-│ Floating bar (WS_EX_NOACTIVATE | TOOLWINDOW)    │  360×80px
-│  └── Renders: idle / working / done / error     │
-├─────────────────────────────────────────────────┤
-│ Clipboard:                                      │
-│  SimulateCtrlC → Read selection → Write enhance │
-│  → Simulate Ctrl+V → Restore original           │
-├─────────────────────────────────────────────────┤
-│ Enhance client                                  │
-│  POST https://api.gmi-serving.com/v1/...        │
-│  model = MiniMax-M3                             │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  WebView2 window (560×480)                       │
+│  - SetupView: API key + model + base URL + hotkey│
+│  - DashboardView: floating bar + history        │
+│  - SettingsView: edit config, validation         │
+└────────────────┬─────────────────────────────────┘
+                 │ wails bindings (TypeScript ⇄ Go)
+┌────────────────▼─────────────────────────────────┐
+│  Go backend (app.go)                             │
+│  - EnhanceText:   call GMI /v1/chat/completions  │
+│  - GetConfig:     load %APPDATA%\SparkEnhance\…  │
+│  - SaveSetup:     persist + reinstall hotkey     │
+│  - ShowFloating:  position + show WebView2       │
+└────────────────┬─────────────────────────────────┘
+                 │
+┌────────────────▼─────────────────────────────────┐
+│  internal/platform (Win32)                      │
+│  - RegisterHotKey: global Ctrl+Shift+E           │
+│  - Clipboard:      read, write, Ctrl+C/V sim    │
+│  - Shell_NotifyIcon: system tray + menu         │
+└──────────────────────────────────────────────────┘
 ```
 
-| Component | LOC | Notes |
-|---|---|---|
-| `internal/enhance` | ~250 | GMI client + ported prompt + cleaner + scorer |
-| `internal/clipboard` | ~120 | Win32 Unicode clipboard + keybd_event |
-| `internal/hotkey` | ~95  | chord parser for `RegisterHotKey` |
-| `internal/tray` | ~140 | Win32 NOTIFYICONDATAW + popup menu |
-| `internal/bar` | ~260  | borderless WS_EX_NOACTIVATE floating bar |
-| `internal/win` | ~200  | event loop, wndProc, glue |
-| `cmd/sparkenhance` | ~85 | entry, config, single-instance |
-| **Total** | **~1150** | **+ tests, 6.7MB binary, no runtime** |
+## Files
+
+| Path | Purpose |
+|---|---|
+| `app.go`               | Wails-bound methods callable from React |
+| `main.go`              | Wails bootstrap, embeds frontend/dist |
+| `frontend/src/App.tsx` | Root React component, event handling |
+| `frontend/src/views/SetupView.tsx`     | First-run setup form |
+| `frontend/src/views/DashboardView.tsx` | Main enhance + settings UI |
+| `internal/enhance/`    | GMI Cloud client + score heuristic + cleaner |
+| `internal/config/`     | JSON-on-disk config at `%APPDATA%\SparkEnhance\config.json` |
+| `internal/platform/`   | Win32 hotkey, clipboard, tray |
+| `frontend/wailsjs/`    | Auto-generated TS bindings |
+| `build/windows/icon.ico` | 6-resolution app icon |
 
 ## Tests
 
 ```bash
 go test ./...
 # ok  github.com/tuancookiez-hub/sparkenhance/internal/enhance
-#    TestCleanStripsThinkBlock, TestCleanStripsFences, TestCleanStripsQuotes,
-#    TestUserMessageFormat, TestCleanEmpty,
-#    TestScoreEmpty, TestScoreBlankLines, TestScoreBaseline, TestScoreStrongPrompt,
-#    TestScoreSpecifics, TestScoreMax100,
-#    TestEnhanceRoundTrip (mocked GMI server),
-#    TestValidateKey
+#    13 passing (cleaner, scorer, mocked GMI round-trip, key validation)
 ```
 
-## How it compares to the Desktop plugin
-
-This is the **standalone, OS-level** version of the [Hermes Enhance
-Prompt](https://github.com/tuancookiez-hub/hermes-enhance-prompt) plugin
-that lives inside Hermes Desktop. The rewrite logic — system prompt,
-cleaner, scorer — is **ported 1:1** from the plugin's `prompts.py`. The
-**delivery surface** is the new thing:
+## Compared to the Desktop plugin
 
 | | Plugin (Hermes Desktop) | SparkEnhance (this) |
 |---|---|---|
-| Where it runs | Inside Hermes Desktop | Standalone, OS tray |
+| Where it runs | Inside Hermes Desktop | Standalone Windows app |
 | Where it works | Hermes composer | Any text in any app |
-| Activation | Click sparkle | Ctrl+Shift+E |
+| Activation | Click sparkle | Ctrl+Shift+E (global) |
 | Output | Replaces composer draft | Clipboard + auto-paste |
-| Revert | Click discard icon | n/a (selection is replaced) |
-| Binary | Bundled with Desktop | 6.7MB single .exe |
-| Language | JavaScript + Python | Go |
+| Binary | Bundled with Desktop | 11.2 MB single .exe |
+| UI tech | React (WebView2) inside Hermes | React (WebView2) standalone |
 
-## Hackathon submission details
+The rewrite logic — system prompt, cleaner, scorer — is **ported 1:1** from
+the plugin's `prompts.py` and `score.js`.
+
+## Hackathon submission
 
 - **Track:** 1 (Reasoning)
-- **Models used:** MiniMax-M3
+- **Models used:** MiniMax-M3 (and 3.5-Speculative)
 - **GMI endpoint:** `https://api.gmi-serving.com/v1/chat/completions`
-- **Demo video:** <link>
-- **Public repo:** <link>
+- **Public repo:** <https://github.com/tuancookiez-hub/sparkenhance>
 
 ## License
 

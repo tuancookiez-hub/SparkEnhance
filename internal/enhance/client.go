@@ -27,10 +27,16 @@ type Client struct {
 
 // NewClient returns a GMI Cloud client. apiKey must be set before use.
 func NewClient(apiKey string) *Client {
+	return NewClientWithBase(apiKey, gmiBaseURL, modelName)
+}
+
+// NewClientWithBase lets the caller override the base URL and model name
+// (used when the user switches provider in Settings).
+func NewClientWithBase(apiKey, baseURL, model string) *Client {
 	return &Client{
-		apiKey:  apiKey,
-		baseURL: gmiBaseURL,
-		model:   modelName,
+		apiKey: apiKey,
+		baseURL: baseURL,
+		model: model,
 		httpCL: &http.Client{
 			Timeout: 60 * time.Second,
 		},

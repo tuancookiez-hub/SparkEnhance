@@ -1,16 +1,24 @@
 # Changelog
 
-## v0.1.0 — 2026-09-03
+## v0.3.0 — 2026-09-03
 
-Initial submission for MiniMax Week, Track 1.
+**Major rewrite: Wails v2 + React UI.**
 
-- Tray-resident Windows app, 6.7MB single `.exe`, no runtime
-- Global hotkey Ctrl+Shift+E triggers enhance flow
-- Floating bar with idle/working/done/error states
-- Auto-paste: writes to clipboard, simulates Ctrl+V, restores original
-- MiniMax-M3 via GMI Cloud OpenAI-compatible endpoint
-- System prompt + cleaner + scorer ported 1:1 from
-  [hermes-enhance-prompt](https://github.com/tuancookiez-hub/hermes-enhance-prompt)
-- 13 unit tests pass (cleaner, scorer, full enhance round-trip)
-- First-run config at `%APPDATA%\SparkEnhance\config.json`
-- Single-instance lock via named mutex
+- Migrated from raw Win32 to **Wails v2** (Go backend + WebView2 UI)
+- React/TypeScript frontend with **Handy-inspired dark theme**
+- SetupView: first-run form for GMI base URL, API key, model, hotkey, auto-paste
+- DashboardView: floating enhance bar with live quality score badge
+- SettingsView: edit base URL / model / hotkey without restart
+- Internal Wails events: `enhance:start`, `enhance:done`, `enhance:error`
+- Configurable model: MiniMax-M3, MiniMax-M3.5-Speculative, or any
+  GMI-supported model via the base URL
+- System tray with Enhance / Settings / Quit menu
+- 6-resolution app icon (16/24/32/48/64/128/256)
+- All Win32 packages deleted (win/, bar/, tray/, setup/, startup/, etc.)
+- 13 enhance unit tests still pass
+
+## v0.2.x — earlier
+
+Raw Win32 attempt (build/sparkenhance_console.exe worked but the
+floating window failed to display due to syscall quirks). Archived in
+git history.
