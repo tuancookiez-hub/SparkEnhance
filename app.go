@@ -1,13 +1,14 @@
 // Package main is the SparkEnhance Wails backend.
 //
 // Architecture:
-//   - app.go:        Wails-bound methods callable from the React UI
-//   - enhance/:      GMI Cloud /v1/chat/completions client (M3 model)
-//   - config/:       JSON-on-disk settings at %APPDATA%\SparkEnhance\config.json
-//   - platform/:     OS glue — global hotkey, system tray, clipboard
+//   - app.go:        Wails-bound methods + global hotkey dispatch
+//   - enhance/:      GMI Cloud /v1/chat/completions client
+//   - config/:       JSON-on-disk settings
+//   - platform/:     Win32 hook + clipboard + tray (best-effort)
 //
-// All long-running operations are exposed to the UI as Wails events so
-// the React frontend can render progress and final output.
+// The Wails window is the floating bar. Closing the X button hides
+// instead of quits; the app stays alive in the background and keeps
+// listening for the global hotkey.
 package main
 
 import (
@@ -18,6 +19,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
+	"time"
+	"unsafe"
 
 	"github.com/tuancookiez-hub/sparkenhance/internal/config"
 	"github.com/tuancookiez-hub/sparkenhance/internal/enhance"
@@ -26,8 +30,6 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App is bound to the Wails frontend. Every exported method becomes a
-// TypeScript function in frontend/wailsjs/go/main/App.
 type App struct {
 	ctx       context.Context
 	cfg       *config.Config
@@ -36,10 +38,11 @@ type App struct {
 	started   bool
 	hotkeyCh  chan struct{}
 	cancelHot context.CancelFunc
+
+	// remember the last foreground HWND so we can restore focus after dismiss
+	prevFocusHWND uintptr
 }
 
-// NewApp constructs the app with the default config and GMI base URL.
-// Per-request model + API key come from the user via Setup().
 func NewApp() *App {
 	cfg, err := config.Load(config.DefaultDir())
 	if err != nil {
@@ -52,24 +55,29 @@ func NewApp() *App {
 	}
 }
 
-// startup is invoked by Wails after the WebView2 window is ready.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	log.SetOutput(logFile())
 	log.Println("SparkEnhance starting (Wails backend)")
 
-	// Initialize system tray.
+	// Try to install the system tray (best-effort; may fail in some WebView2 setups).
 	trayCtx, _ := context.WithCancel(ctx)
 	go platform.RunTray(trayCtx, a.onTrayEnhance, a.onTrayQuit, a.onTraySettings)
 
-	// Initialize global hotkey from saved config.
+	// Install the global hotkey.
 	a.installHotkey()
 
+	// Hide the Wails window on first launch — app lives in the tray until the hotkey fires.
+	go func() {
+		// Give Wails a moment to finish its first paint.
+		time.Sleep(800 * time.Millisecond)
+		wailsruntime.WindowHide(a.ctx)
+	}()
+
 	a.started = true
-	log.Println("SparkEnhance ready")
+	log.Println("SparkEnhance ready (window hidden, hotkey listening)")
 }
 
-// shutdown is invoked by Wails on window close.
 func (a *App) shutdown(ctx context.Context) {
 	if a.cancelHot != nil {
 		a.cancelHot()
@@ -77,29 +85,23 @@ func (a *App) shutdown(ctx context.Context) {
 	log.Println("SparkEnhance shutting down")
 }
 
-// onTrayEnhance is called when the user clicks the tray's "Enhance" item.
 func (a *App) onTrayEnhance() {
 	a.fireEnhanceFromClipboard()
 }
 
-// onTraySettings is called when the user clicks the tray's "Settings" item.
-// It shows the main Wails window so they can edit API key / model.
 func (a *App) onTraySettings() {
 	wailsruntime.WindowShow(a.ctx)
 	wailsruntime.WindowUnminimise(a.ctx)
 }
 
-// onTrayQuit is called when the user clicks the tray's "Quit" item.
 func (a *App) onTrayQuit() {
 	wailsruntime.Quit(a.ctx)
 }
 
 // ====== Bound methods (callable from React) ======
 
-// IsConfigured reports whether an API key has been saved.
 func (a *App) IsConfigured() bool { return a.cfg.IsConfigured() }
 
-// SetupInput is the first-run form: save the API key and the chosen model.
 type SetupInput struct {
 	APIKey    string `json:"apiKey"`
 	BaseURL   string `json:"baseUrl"`
@@ -108,7 +110,6 @@ type SetupInput struct {
 	AutoPaste bool   `json:"autoPaste"`
 }
 
-// SaveSetup persists the configuration and (re)installs the global hotkey.
 func (a *App) SaveSetup(in SetupInput) error {
 	if in.APIKey == "" {
 		return fmt.Errorf("API key is required")
@@ -130,7 +131,6 @@ func (a *App) SaveSetup(in SetupInput) error {
 	return nil
 }
 
-// GetConfig returns the current configuration (minus the API key for safety).
 func (a *App) GetConfig() map[string]any {
 	return map[string]any{
 		"baseUrl":   a.cfg.GetBaseURL(),
@@ -141,18 +141,16 @@ func (a *App) GetConfig() map[string]any {
 	}
 }
 
-// ValidateKey pings GMI /v1/models with the saved key to confirm it works.
 func (a *App) ValidateKey() error {
 	if !a.cfg.IsConfigured() {
 		return fmt.Errorf("no API key configured")
 	}
 	a.enhancer = enhance.NewClientWithBase(a.cfg.GetAPIKey(), a.cfg.GetBaseURL(), a.cfg.GetModel())
-	ctx, cancel := context.WithTimeout(a.ctx, 15*1e9) // 15s
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	defer cancel()
 	return a.enhancer.ValidateKey(ctx)
 }
 
-// ListModels fetches the model list from a given base URL + API key.
 func (a *App) ListModels(baseURL, apiKey string) ([]string, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("base URL is required")
@@ -164,77 +162,49 @@ func (a *App) ListModels(baseURL, apiKey string) ([]string, error) {
 		return nil, fmt.Errorf("API key is required")
 	}
 	client := enhance.NewClientWithBase(apiKey, baseURL, "")
-	ctx, cancel := context.WithTimeout(a.ctx, 15*1e9)
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	defer cancel()
 	return client.ListModels(ctx)
 }
 
-// EnhanceInput is the binding for the floating UI.
 type EnhanceInput struct {
 	Text string `json:"text"`
 }
 
-// EnhanceResult mirrors enhance.EnhanceResult for JSON binding.
 type EnhanceResult struct {
 	Output string `json:"output"`
 	Score  int    `json:"score"`
 }
 
-// EnhanceText rewrites the given text using the configured model.
-// Returns the cleaned output and a quality score.
 func (a *App) EnhanceText(in EnhanceInput) (EnhanceResult, error) {
 	if !a.cfg.IsConfigured() {
 		return EnhanceResult{}, fmt.Errorf("not configured: open Settings and add an API key")
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if a.enhancer == nil {
 		a.enhancer = enhance.NewClientWithBase(a.cfg.GetAPIKey(), a.cfg.GetBaseURL(), a.cfg.GetModel())
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 90*1e9)
-	defer cancel()
+	enh := a.enhancer
+	a.mu.Unlock()
 
-	res, err := a.enhancer.Enhance(ctx, in.Text)
+	ctx, cancel := context.WithTimeout(a.ctx, 90*time.Second)
+	defer cancel()
+	res, err := enh.Enhance(ctx, in.Text)
 	if err != nil {
 		return EnhanceResult{}, err
 	}
 	return EnhanceResult{Output: res.Output, Score: res.Score}, nil
 }
 
-// ScoreOnly returns just the quality score (used for the live badge as the
-// user types into the floating bar).
-func (a *App) ScoreOnly(text string) int {
-	return enhance.Score(text)
-}
+func (a *App) ScoreOnly(text string) int { return enhance.Score(text) }
 
-// ReadClipboard returns the current clipboard text (for the auto-fill feature).
-func (a *App) ReadClipboard() (string, error) {
-	return platform.ReadClipboard()
-}
+func (a *App) ReadClipboard() (string, error) { return platform.ReadClipboard() }
+func (a *App) WriteClipboard(text string) error { return platform.WriteClipboard(text) }
+func (a *App) GetSelection() (string, error)    { return platform.GetSelection() }
+func (a *App) SimulatePaste(text string) error  { return platform.SimulatePaste(text) }
 
-// WriteClipboard sets the clipboard to the given text.
-func (a *App) WriteClipboard(text string) error {
-	return platform.WriteClipboard(text)
-}
+func (a *App) SetAutoPaste(v bool) error { return a.cfg.SetAutoPaste(v) }
 
-// GetSelection reads the currently selected text by sending Ctrl+C and
-// grabbing the clipboard contents. Returns empty if nothing was selected.
-func (a *App) GetSelection() (string, error) {
-	return platform.GetSelection()
-}
-
-// SimulatePaste writes text to the clipboard and sends Ctrl+V.
-func (a *App) SimulatePaste(text string) error {
-	return platform.SimulatePaste(text)
-}
-
-// SetAutoPaste toggles whether the floating bar auto-pastes after enhance.
-func (a *App) SetAutoPaste(v bool) error {
-	return a.cfg.SetAutoPaste(v)
-}
-
-// SetHotkey updates the global hotkey.
 func (a *App) SetHotkey(hotkey string) error {
 	if err := a.cfg.SetHotkey(hotkey); err != nil {
 		return err
@@ -243,7 +213,7 @@ func (a *App) SetHotkey(hotkey string) error {
 	return nil
 }
 
-// installHotkey (re)registers the global hotkey. Safe to call multiple times.
+// installHotkey (re)registers the global hotkey via WH_KEYBOARD_LL.
 func (a *App) installHotkey() {
 	if a.cancelHot != nil {
 		a.cancelHot()
@@ -259,16 +229,31 @@ func (a *App) onHotkey() {
 	a.fireEnhanceFromClipboard()
 }
 
-// fireEnhanceFromClipboard reads the current selection (via Ctrl+C) and
-// emits a "show-bar" event to the frontend with the result.
+// fireEnhanceFromClipboard is the main hotkey flow:
+//  1. remember foreground window
+//  2. Ctrl+C to capture selection
+//  3. read clipboard
+//  4. show the floating bar
+//  5. call M3
+//  6. emit result event to the React UI
 func (a *App) fireEnhanceFromClipboard() {
-	prev, _ := platform.ReadClipboard()
+	// Remember which app was in front so we can restore focus on dismiss.
+	a.prevFocusHWND = getForegroundWindow()
+
+	// Get cursor position for the floating window placement.
+	cx, cy := getCursorPos()
+
+	// Resize the Wails window to bar dimensions and position near cursor.
+	wailsruntime.WindowSetSize(a.ctx, 440, 200)
+	wailsruntime.WindowSetPosition(a.ctx, cx, cy+20)
+	wailsruntime.WindowSetAlwaysOnTop(a.ctx, true)
+	wailsruntime.WindowShow(a.ctx)
+	wailsruntime.WindowUnminimise(a.ctx)
+
+	// Grab the selection (Ctrl+C into clipboard).
 	sel, err := platform.GetSelection()
 	if err != nil || sel == "" {
-		sel, _ = platform.ReadClipboard()
-	}
-	if sel == "" {
-		wailsruntime.EventsEmit(a.ctx, "enhance:error", "No text selected")
+		wailsruntime.EventsEmit(a.ctx, "enhance:error", "No text selected. Highlight some text, then try again.")
 		return
 	}
 	wailsruntime.EventsEmit(a.ctx, "enhance:start", sel)
@@ -281,7 +266,7 @@ func (a *App) fireEnhanceFromClipboard() {
 	enh := a.enhancer
 	a.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(a.ctx, 90*1e9)
+	ctx, cancel := context.WithTimeout(a.ctx, 90*time.Second)
 	defer cancel()
 	res, err := enh.Enhance(ctx, sel)
 	if err != nil {
@@ -293,19 +278,40 @@ func (a *App) fireEnhanceFromClipboard() {
 		"output":    res.Output,
 		"before":    before,
 		"after":     res.Score,
-		"prevClip":  prev,
 	})
 }
 
-// ShowFloatingWindow positions and shows the floating bar window near the cursor.
-func (a *App) ShowFloatingWindow(x, y int) {
-	wailsruntime.WindowSetPosition(a.ctx, x, y)
-	wailsruntime.WindowShow(a.ctx)
+// DismissBar hides the bar and restores focus to the previous app.
+func (a *App) DismissBar() {
+	wailsruntime.WindowSetAlwaysOnTop(a.ctx, false)
+	wailsruntime.WindowHide(a.ctx)
+	if a.prevFocusHWND != 0 {
+		setForegroundWindow(a.prevFocusHWND)
+		a.prevFocusHWND = 0
+	}
 }
 
-// HideFloatingWindow hides the floating bar.
-func (a *App) HideFloatingWindow() {
-	wailsruntime.WindowHide(a.ctx)
+// CopyOutput copies the enhanced text to the clipboard and (if enabled)
+// auto-pastes it at the original selection site, then dismisses the bar.
+func (a *App) CopyOutput(text string) {
+	if err := platform.WriteClipboard(text); err != nil {
+		wailsruntime.EventsEmit(a.ctx, "enhance:error", "Copy failed: "+err.Error())
+		return
+	}
+	if a.cfg.AutoPaste() {
+		// Restore focus to the source app, then send Ctrl+V.
+		if a.prevFocusHWND != 0 {
+			setForegroundWindow(a.prevFocusHWND)
+			time.Sleep(80 * time.Millisecond)
+		}
+		_ = platform.SimulatePaste(text)
+	}
+	a.DismissBar()
+}
+
+// QuitApp is called from the UI to fully exit.
+func (a *App) QuitApp() {
+	wailsruntime.Quit(a.ctx)
 }
 
 // ====== Logging ======
@@ -339,8 +345,51 @@ func (s *syncFile) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// MarshalJSON helper to pretty-print the current config (debugging only).
+// MarshalJSON helper (debugging only).
 func (a *App) dumpConfig() string {
 	b, _ := json.MarshalIndent(a.cfg, "", "  ")
 	return string(b)
 }
+
+// ====== Win32 helpers (no extra deps) ======
+
+var (
+	kernel32         = syscall.NewLazyDLL("kernel32.dll")
+	user32           = syscall.NewLazyDLL("user32.dll")
+	procGetCursorPos = user32.NewProc("GetCursorPos")
+	procGetForeground = user32.NewProc("GetForegroundWindow")
+	procSetForeground = user32.NewProc("SetForegroundWindow")
+	procSleep        = kernel32.NewProc("Sleep")
+)
+
+func getCursorPos() (int, int) {
+	type pt struct{ X, Y int32 }
+	var p pt
+	r, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
+	if r == 0 {
+		return 100, 100
+	}
+	return int(p.X), int(p.Y)
+}
+
+func getForegroundWindow() uintptr {
+	h, _, _ := procGetForeground.Call()
+	return h
+}
+
+func setForegroundWindow(h uintptr) {
+	if h == 0 {
+		return
+	}
+	_, _, _ = procSetForeground.Call(h)
+}
+
+func timeSleepMillis(ms int) {
+	if ms <= 0 {
+		return
+	}
+	_, _, _ = procSleep.Call(uintptr(ms))
+}
+
+// avoid "imported and not used" if we ever drop one of these
+var _ = time.Second

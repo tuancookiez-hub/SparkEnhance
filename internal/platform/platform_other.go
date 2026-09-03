@@ -8,22 +8,18 @@ import (
 )
 
 // On non-Windows the platform package is a stub so the project still
-// builds for development. Clipboard uses a temp file marker, hotkey is
-// a no-op (since RegisterHotKey is Windows-only), tray is a no-op.
+// builds for development.
 
-func ListenHotkey(ctx context.Context, _ string, onFire func()) {
+func listenHotkeyImpl(ctx context.Context, _ string, onFire func()) {
 	<-ctx.Done()
 }
 
-func ReadClipboard() (string, error) {
-	return "", nil
-}
+func readClipboardImpl() (string, error)       { return "", nil }
+func writeClipboardImpl(text string) error     { return nil }
+func getSelectionImpl() (string, error)        { return "", nil }
+func simulatePasteImpl(text string) error      { return nil }
 
-func WriteClipboard(text string) error { return nil }
-func GetSelection() (string, error)      { return "", nil }
-func SimulatePaste(text string) error    { return nil }
-
-func RunTray(ctx context.Context, _, _, _ func()) {
+func runTrayImpl(ctx context.Context, _, _, _ func()) {
 	log.Println("tray: stub (non-Windows build)")
 	<-ctx.Done()
 }

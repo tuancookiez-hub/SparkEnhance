@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { EventsOn } from '../wailsjs/runtime/runtime';
-import { IsConfigured, GetConfig, SaveSetup, EnhanceText, ValidateKey, WriteClipboard, SimulatePaste, ReadClipboard, ScoreOnly } from '../wailsjs/go/main/App';
+import { IsConfigured, GetConfig, SaveSetup, CopyOutput, DismissBar, QuitApp, ValidateKey, ListModels, ScoreOnly } from '../wailsjs/go/main/App';
+import FloatingBar from './views/FloatingBar';
+import SettingsView from './views/SettingsView';
 import SetupView from './views/SetupView';
-import DashboardView from './views/DashboardView';
+import './style.css';
 
 export interface AppConfig {
   baseUrl: string;
@@ -17,74 +19,90 @@ export interface EnhanceDone {
   output: string;
   before: number;
   after: number;
-  prevClip: string;
 }
 
+type Phase = 'idle' | 'capturing' | 'enhancing' | 'result' | 'error';
+
 export default function App() {
-  const [configured, setConfigured] = useState<boolean | null>(null); // null = loading
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [cfg, setCfg] = useState<AppConfig | null>(null);
-  const [enhanceState, setEnhanceState] = useState<{ text: string; result: EnhanceDone | null; error: string | null } | null>(null);
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [selection, setSelection] = useState('');
+  const [result, setResult] = useState<EnhanceDone | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     IsConfigured().then(setConfigured);
+    GetConfig().then(c => setCfg(c as AppConfig));
 
-    // Listen for hotkey results from the backend.
+    // The backend drives phase changes via events after the hotkey fires.
     EventsOn('enhance:start', (text: string) => {
-      setEnhanceState({ text, result: null, error: null });
+      setSelection(text);
+      setResult(null);
+      setErrorMsg('');
+      setPhase('enhancing');
     });
     EventsOn('enhance:done', (data: EnhanceDone) => {
-      setEnhanceState(prev => prev ? { ...prev, result: data, error: null } : null);
+      setResult(data);
+      setPhase('result');
     });
     EventsOn('enhance:error', (msg: string) => {
-      setEnhanceState(prev => prev ? { ...prev, error: msg } : null);
+      setErrorMsg(msg);
+      setPhase('error');
     });
   }, []);
 
   async function handleSetup(values: { apiKey: string; baseUrl: string; model: string; hotkey: string; autoPaste: boolean }) {
     await SaveSetup(values);
-    const cfg = await GetConfig();
-    setCfg(cfg as AppConfig);
+    setCfg(await GetConfig() as AppConfig);
     setConfigured(true);
   }
 
-  async function handleEnhance(text: string) {
-    try {
-      const res = await EnhanceText({ text });
-      const result: EnhanceDone = {
-        selection: text,
-        output: res.output,
-        before: await ScoreOnly(text),
-        after: res.score,
-        prevClip: '',
-      };
-      setEnhanceState({ text, result, error: null });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setEnhanceState(prev => prev ? { ...prev, error: msg } : null);
-    }
+  function handleCopyAndDismiss() {
+    if (!result) return;
+    CopyOutput(result.output);
+    setPhase('idle');
   }
 
-  async function handleCopyAndPaste(output: string, autoPaste: boolean) {
-    await WriteClipboard(output);
-    if (autoPaste) {
-      await SimulatePaste(output);
-    }
+  function handleDismiss() {
+    DismissBar();
+    setPhase('idle');
+  }
+
+  function handleQuit() {
+    QuitApp();
   }
 
   if (configured === null) return null;
+  if (!configured) {
+    return <SetupView onSubmit={handleSetup} />;
+  }
+
+  if (showSettings) {
+    return (
+      <SettingsView
+        cfg={cfg}
+        onSaved={async () => { setCfg(await GetConfig() as AppConfig); setShowSettings(false); }}
+        onBack={() => setShowSettings(false)}
+      />
+    );
+  }
 
   return (
-    <div className="app-root">
-      {!configured
-        ? <SetupView onSubmit={handleSetup} />
-        : <DashboardView
-            cfg={cfg}
-            enhanceState={enhanceState}
-            onEnhance={handleEnhance}
-            onCopyPaste={handleCopyAndPaste}
-            onRefreshCfg={async () => { const c = await GetConfig(); setCfg(c as AppConfig); }}
-          />
-      }
+    <div className="app-root floating">
+      <FloatingBar
+        phase={phase}
+        selection={selection}
+        result={result}
+        errorMsg={errorMsg}
+        cfg={cfg}
+        onCopy={handleCopyAndDismiss}
+        onDismiss={handleDismiss}
+        onSettings={() => setShowSettings(true)}
+        onQuit={handleQuit}
+      />
     </div>
   );
 }
+

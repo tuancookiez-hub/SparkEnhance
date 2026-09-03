@@ -1,8 +1,14 @@
 // SparkEnhance entry point.
 //
-// Wails starts here. The Wails runtime owns the WebView2 window and the
-// message loop; all OS glue (system tray, global hotkey, clipboard) is
-// initialised from App.startup() in app.go.
+// Architecture:
+//   - main:     bootstraps the Wails WebView2 window
+//   - app.go:   Wails bindings + global hotkey + window repositioning
+//   - enhance/: GMI Cloud /v1/chat/completions client
+//   - config/:  JSON-on-disk settings
+//   - platform/: Win32 hook + clipboard + tray
+//
+// The Wails window is the floating bar. When hidden, the app keeps running
+// in the system tray (background) and listens for the global hotkey.
 package main
 
 import (
@@ -21,8 +27,11 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:  "SparkEnhance",
-		Width:  560,
-		Height: 480,
+		Width:  440,
+		Height: 200,
+		// HideWindowOnClose: closing the X button hides instead of quits.
+		// The app keeps running so the hotkey still fires.
+		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

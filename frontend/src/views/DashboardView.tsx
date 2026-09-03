@@ -138,9 +138,6 @@ export default function DashboardView({ cfg, enhanceState, onEnhance, onCopyPast
             <div className="result-card">
               <div className="result-meta">
                 <ScoreDiff before={result.before} after={result.after} />
-                <span className="prev-clip-hint">
-                  {result.prevClip ? 'Previous clipboard restored' : ''}
-                </span>
               </div>
               <textarea
                 className="result-output"
