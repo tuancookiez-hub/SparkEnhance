@@ -38,6 +38,12 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
+// BaseURL returns the configured base URL (for tests/diagnostics).
+func (c *Client) BaseURL() string { return c.baseURL }
+
+// Model returns the configured model name (for tests/diagnostics).
+func (c *Client) Model() string { return c.model }
+
 // EnhanceRequest is the input to the enhance flow.
 type EnhanceRequest struct {
 	Input string

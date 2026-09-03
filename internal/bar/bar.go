@@ -1,4 +1,5 @@
-// Package bar implements the floating "enhance" window using raw Win32.
+// Package bar implements the floating "enhance" result window using raw Win32.
+// No external DLL dependencies — all via golang.org/x/sys.
 package bar
 
 import (
@@ -8,49 +9,44 @@ import (
 	"unsafe"
 )
 
-const className = "SparkEnhanceBar"
+const (
+	className = "SparkEnhanceBar"
+	barWidth  = 400
+	barHeight = 130
+	btnH      = 24
+	btnY      = 96
 
-var (
-	user32                 = syscall.NewLazyDLL("user32.dll")
-	gdi32                  = syscall.NewLazyDLL("gdi32.dll")
-	procGetModuleHandleW   = user32.NewProc("GetModuleHandleW")
-	procDestroyWindow      = user32.NewProc("DestroyWindow")
-	procSetWindowPos       = user32.NewProc("SetWindowPos")
-	procShowWindow         = user32.NewProc("ShowWindow")
-	procInvalidateRect     = user32.NewProc("InvalidateRect")
-	procBeginPaint         = user32.NewProc("BeginPaint")
-	procEndPaint           = user32.NewProc("EndPaint")
-	procDrawTextW          = user32.NewProc("DrawTextW")
-	procGetClientRect      = user32.NewProc("GetClientRect")
-	procFillRect           = user32.NewProc("FillRect")
-	procSetBkMode          = user32.NewProc("SetBkMode")
-	procSetTextColor       = user32.NewProc("SetTextColor")
-	procDefWindowProcW     = user32.NewProc("DefWindowProcW")
-	procRegisterClassExW   = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW    = user32.NewProc("CreateWindowExW")
-	procPostMessageW       = user32.NewProc("PostMessageW")
+	closeW = 70
+	closeX = barWidth - 20 - closeW
+	copyW = 70
+	copyX = closeX - 8 - copyW
 )
 
-// Window is the floating bar.
-type Window struct {
-	hwnd   uintptr
-	mu     sync.Mutex
-	state  State
-	lastSelection string
-	lastEnhanced  string
-	prevClipboard string
-	autoPaste     bool
-	errorText     string
-}
+var (
+	user32  = syscall.NewLazyDLL("user32.dll")
+	gdi32   = syscall.NewLazyDLL("gdi32.dll")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-// State describes what the bar is currently showing.
-type State int
-
-const (
-	StateHidden State = iota
-	StateEnhancing
-	StateResult
-	StateError
+	procGetModuleHandleW     = kernel32.NewProc("GetModuleHandleW")
+	procDestroyWindow        = user32.NewProc("DestroyWindow")
+	procSetWindowPos         = user32.NewProc("SetWindowPos")
+	procShowWindow           = user32.NewProc("ShowWindow")
+	procInvalidateRect      = user32.NewProc("InvalidateRect")
+	procBeginPaint           = user32.NewProc("BeginPaint")
+	procEndPaint             = user32.NewProc("EndPaint")
+	procDrawTextW            = user32.NewProc("DrawTextW")
+	procGetClientRect        = user32.NewProc("GetClientRect")
+	procFillRect             = user32.NewProc("FillRect")
+	procSetBkMode            = user32.NewProc("SetBkMode")
+	procSetTextColor         = user32.NewProc("SetTextColor")
+	procDefWindowProcW       = user32.NewProc("DefWindowProcW")
+	procRegisterClassExW     = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW      = user32.NewProc("CreateWindowExW")
+	procSetCursor            = user32.NewProc("SetCursor")
+	procLoadCursorW          = user32.NewProc("LoadCursorW")
+	procGetSysColorBrush     = user32.NewProc("GetSysColorBrush")
+	procCreateRoundRectRgn   = gdi32.NewProc("CreateRoundRectRgn")
+	procSetWindowRgn         = user32.NewProc("SetWindowRgn")
 )
 
 type rect struct {
@@ -58,16 +54,16 @@ type rect struct {
 }
 
 type paintstruct struct {
-	Hdc         uintptr
-	FErase      int32
-	Rect        rect
-	FRestore    int32
-	FIncUpdate  int32
-	ReservedB   [32]byte
+	Hdc        uintptr
+	FErase     int32
+	Rect       rect
+	FRestore   int32
+	FIncUpdate int32
+	ReservedB  [32]byte
 }
 
 type wndclassexw struct {
-	CbSize        uint32
+	CbSize         uint32
 	Style         uint32
 	LpfnWndProc   uintptr
 	CbClsExtra    int32
@@ -81,56 +77,82 @@ type wndclassexw struct {
 	HIconSm       uintptr
 }
 
-// New creates the bar window (initially hidden). autoPaste is the configured
-// value at construction time; changing it requires recreating the bar.
+var hCursorHand uintptr
+
+// Window is the floating bar.
+type Window struct {
+	hwnd            uintptr
+	mu              sync.Mutex
+	state           State
+	lastSelection   string
+	lastEnhanced    string
+	prevClipboard   string
+	autoPaste       bool
+	errorText       string
+	score           int
+}
+
+// State describes what the bar is currently showing.
+type State int
+
+const (
+	StateHidden State = iota
+	StateEnhancing
+	StateResult
+	StateError
+)
+
+var barInstances = map[uintptr]*Window{}
+
+func init() {
+	hCursorHand, _, _ = procLoadCursorW.Call(0, uintptr(32649)) // IDC_HAND
+}
+
+// New creates the bar window (initially hidden).
 func New(autoPaste bool) (*Window, error) {
 	w := &Window{autoPaste: autoPaste}
 
-	classNamePtr, _ := syscall.UTF16PtrFromString(className)
+	classPtr, _ := syscall.UTF16PtrFromString(className)
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 
-	const CS_HREDRAW = 0x0002
 	cls := wndclassexw{
 		CbSize:        uint32(unsafe.Sizeof(wndclassexw{})),
-		Style:         CS_HREDRAW,
-		LpfnWndProc:   syscall.NewCallback(wndProc),
+		Style:         0x0001 | 0x0002,
+		LpfnWndProc:   syscall.NewCallback(barWndProc),
 		HInstance:     hInst,
-		HbrBackground: 6, // COLOR_3DFACE
-		LpszClassName: classNamePtr,
+		HbrBackground: 6,
+		LpszClassName: classPtr,
 	}
 	_, _, _ = procRegisterClassExW.Call(uintptr(unsafe.Pointer(&cls)))
 
-	const (
-		WS_POPUP         = 0x80000000
-		WS_BORDER        = 0x00800000
-		WS_VISIBLE       = 0x10000000
-		WS_EX_NOACTIVATE = 0x08000000
-		WS_EX_TOOLWINDOW = 0x00000080
-		WS_EX_TOPMOST    = 0x00000008
-	)
-
 	hwnd, _, _ := procCreateWindowExW.Call(
-		uintptr(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST),
-		uintptr(unsafe.Pointer(classNamePtr)),
-		0,
-		uintptr(WS_POPUP|WS_BORDER),
-		0, 0, 360, 80,
+		uintptr(0x08000000|0x00000080|0x00000008), // NOACTIVATE|TOOLWINDOW|TOPMOST
+		uintptr(unsafe.Pointer(classPtr)), 0,
+		uintptr(0x80000000|0x00800000), // POPUP|BORDER
+		0, 0, barWidth, barHeight,
 		0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
 		return nil, syscall.GetLastError()
 	}
 	w.hwnd = hwnd
+	barInstances[hwnd] = w
+
+	rgn, _, _ := procCreateRoundRectRgn.Call(0, 0, uintptr(barWidth), uintptr(barHeight), 8, 8)
+	if rgn != 0 {
+		_, _, _ = procSetWindowRgn.Call(hwnd, rgn, 1)
+	}
+
 	return w, nil
 }
 
 // Destroy tears down the bar window.
 func (w *Window) Destroy() {
-	if w.hwnd == 0 {
-		return
+	if w.hwnd != 0 {
+		delete(barInstances, w.hwnd)
+		_, _, _ = procDestroyWindow.Call(w.hwnd)
+		w.hwnd = 0
 	}
-	_, _, _ = procDestroyWindow.Call(w.hwnd)
-	w.hwnd = 0
 }
 
 // Show places the bar at (x, y) in screen coords and displays it.
@@ -139,22 +161,30 @@ func (w *Window) Show(x, y int32, st State) {
 	w.state = st
 	w.errorText = ""
 	w.mu.Unlock()
-	pos := struct{ X, Y int32 }{x + 16, y + 16}
+
 	_, _, _ = procSetWindowPos.Call(
 		w.hwnd, 0,
-		uintptr(uint32(pos.X)), uintptr(uint32(pos.Y)),
-		360, 80,
+		uintptr(uint32(x+16)), uintptr(uint32(y+16)),
+		barWidth, barHeight,
 		0x0040, // SWP_SHOWWINDOW
 	)
 	repaint(w.hwnd)
 }
 
-// Hide hides the bar.
+// Hide hides the bar and restores the original clipboard.
 func (w *Window) Hide() {
 	w.mu.Lock()
 	w.state = StateHidden
 	w.mu.Unlock()
 	_, _, _ = procShowWindow.Call(w.hwnd, 0)
+
+	// Restore original clipboard.
+	w.mu.Lock()
+	prev := w.prevClipboard
+	w.mu.Unlock()
+	if prev != "" {
+		_ = writeClipboardDirect(prev)
+	}
 }
 
 // ShowError shows the bar with an error message.
@@ -163,19 +193,19 @@ func (w *Window) ShowError(msg string) {
 	w.state = StateError
 	w.errorText = msg
 	w.mu.Unlock()
-	_, _, _ = procShowWindow.Call(w.hwnd, 5) // SW_SHOW
+	_, _, _ = procShowWindow.Call(w.hwnd, 5)
 	repaint(w.hwnd)
 }
 
-// SetSelection remembers the original selection for the result.
+// SetSelection stores the original selection text.
 func (w *Window) SetSelection(text string, score int) {
 	w.mu.Lock()
 	w.lastSelection = text
+	w.score = score
 	w.mu.Unlock()
 }
 
-// ShowResult displays the enhanced text and the score, and remembers the
-// previous clipboard contents to restore on dismiss.
+// ShowResult displays the enhanced text and score, remembers prev clipboard.
 func (w *Window) ShowResult(selection, enhanced string, score int, prevClipboard string, autoPaste bool) {
 	w.mu.Lock()
 	w.state = StateResult
@@ -183,6 +213,7 @@ func (w *Window) ShowResult(selection, enhanced string, score int, prevClipboard
 	w.lastEnhanced = enhanced
 	w.prevClipboard = prevClipboard
 	w.autoPaste = autoPaste
+	w.score = score
 	w.mu.Unlock()
 	_, _, _ = procShowWindow.Call(w.hwnd, 5)
 	repaint(w.hwnd)
@@ -192,14 +223,36 @@ func (w *Window) ShowResult(selection, enhanced string, score int, prevClipboard
 }
 
 func (w *Window) doPaste() {
-	if w.lastEnhanced == "" {
+	w.mu.Lock()
+	text := w.lastEnhanced
+	prev := w.prevClipboard
+	w.mu.Unlock()
+	if text == "" {
 		return
 	}
-	if err := pasteEnhanced(w.lastEnhanced, w.prevClipboard); err != nil {
+	if err := pasteEnhanced(text, prev); err != nil {
 		log.Printf("paste error: %v", err)
 	}
 }
 
+// pasteEnhanced is implemented in bar_paste_windows.go.
+func pasteEnhanced(text, prev string) error {
+	return doPaste(text, prev)
+}
+
 func repaint(hwnd uintptr) {
 	_, _, _ = procInvalidateRect.Call(hwnd, 0, 1)
+}
+
+// hitTest returns which region (close=1, copy=2, none=0) at (x,y).
+func (w *Window) hitTest(x, y int32) int {
+	if y >= btnY && y <= btnY+btnH {
+		if x >= closeX && x <= closeX+closeW {
+			return 1
+		}
+		if x >= copyX && x <= copyX+copyW {
+			return 2
+		}
+	}
+	return 0
 }
