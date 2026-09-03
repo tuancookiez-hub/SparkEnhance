@@ -3,6 +3,7 @@ package clipboard
 import (
 	"errors"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -19,6 +20,9 @@ var (
 	globalFree       = kernel32.NewProc("GlobalFree")
 	globalLock       = kernel32.NewProc("GlobalLock")
 	globalUnlock     = kernel32.NewProc("GlobalUnlock")
+	prockeybd_event  = user32.NewProc("keybd_event")
+	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 )
 
 const (
@@ -88,4 +92,31 @@ func Write(text string) error {
 	if _, _, _ = setClipboardData.Call(cfUnicodeText, h); /* best effort */ false {
 	}
 	return nil
+}
+
+// SimulateCtrlC sends Ctrl+C to the active window. Returns false on failure.
+func SimulateCtrlC() bool {
+	const (
+		VK_CONTROL = 0x11
+		VK_C       = 0x43
+		KEYEVENTF_KEYUP = 0x0002
+	)
+
+	// Focus the foreground window first to ensure Ctrl+C goes there.
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return false
+	}
+	_, _, _ = procSetForegroundWindow.Call(hwnd)
+	time.Sleep(30 * time.Millisecond)
+
+	// Key down.
+	_, _, _ = prockeybd_event.Call(VK_CONTROL, 0, 0, 0)
+	_, _, _ = prockeybd_event.Call(VK_C, 0, 0, 0)
+	time.Sleep(30 * time.Millisecond)
+
+	// Key up.
+	_, _, _ = prockeybd_event.Call(VK_C, 0, KEYEVENTF_KEYUP, 0)
+	_, _, _ = prockeybd_event.Call(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+	return true
 }

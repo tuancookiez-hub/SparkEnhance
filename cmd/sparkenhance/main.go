@@ -1,64 +1,94 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/tuancookiez-hub/sparkenhance/internal/config"
 	"github.com/tuancookiez-hub/sparkenhance/internal/enhance"
+	"github.com/tuancookiez-hub/sparkenhance/internal/win"
 )
 
-// Entry point. Full tray + hotkey + bar UI will replace the stub below.
+//go:embed assets/icon.ico
+var iconFS embed.FS
+
 func main() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(os.Stderr)
 
 	cfgDir := config.DefaultDir()
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {
-		log.Fatalf("create config dir: %v", err)
+		log.Fatalf("create config dir %s: %v", cfgDir, err)
 	}
 	cfg, err := config.Load(cfgDir)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
 
-	fmt.Printf("SparkEnhance starting\n")
-	fmt.Printf("  config dir: %s\n", cfgDir)
-	fmt.Printf("  hotkey:     %s\n", cfg.Hotkey)
-	fmt.Printf("  configured: %v\n", cfg.IsConfigured())
+	if !cfg.IsConfigured() {
+		key, err := consolePrompt("Enter GMI Cloud API key")
+		if err != nil {
+			log.Fatalf("first-run setup failed: %v", err)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			log.Fatalf("API key is required")
+		}
+		if err := cfg.SetAPIKey(key); err != nil {
+			log.Fatalf("save API key: %v", err)
+		}
+		log.Printf("API key saved to %s", cfgDir)
+	}
 
-	// Handle SIGINT / SIGTERM for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigs
-		fmt.Println("shutting down")
+		log.Println("shutting down")
 		cancel()
 	}()
 
-	// Verify the core pipeline works end-to-end with a real M3 call.
-	// The GMI key is read from env (GMI_API_KEY) for first-run testing;
-	// the GUI flow will prompt for it on first launch.
-	if key := os.Getenv("GMI_API_KEY"); key != "" {
-		client := enhance.NewClient(key)
+	// End-to-end smoke test: validate the key against the real GMI Cloud.
+	{
+		client := enhance.NewClient(cfg.GetAPIKey())
 		pingCtx, pingCancel := context.WithTimeout(ctx, 30*time.Second)
-		err := client.ValidateKey(pingCtx)
-		pingCancel()
-		if err != nil {
-			log.Printf("API key validation failed: %v", err)
+		if err := client.ValidateKey(pingCtx); err != nil {
+			log.Printf("WARNING: GMI API key validation failed: %v", err)
 		} else {
-			log.Printf("API key validated against GMI Cloud")
+			log.Println("GMI API key OK")
 		}
-	} else {
-		log.Printf("GMI_API_KEY not set — GUI will prompt on first launch")
+		pingCancel()
 	}
 
-	<-ctx.Done()
+	iconData, err := iconFS.ReadFile("assets/icon.ico")
+	if err != nil {
+		log.Fatalf("embed icon: %v", err)
+	}
+
+	if err := win.Run(ctx, cfg, iconData); err != nil {
+		log.Fatalf("app error: %v", err)
+	}
+}
+
+func consolePrompt(label string) (string, error) {
+	fmt.Fprintf(os.Stdout, "%s: ", label)
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }

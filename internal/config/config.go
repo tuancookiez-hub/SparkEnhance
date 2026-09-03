@@ -10,11 +10,11 @@ import (
 
 // Config holds app settings persisted to disk.
 type Config struct {
-	mu      sync.RWMutex
-	path    string
-	APIKey  string `json:"api_key"`
-	Hotkey  string `json:"hotkey"`
-	AutoPaste bool `json:"auto_paste"`
+	mu        sync.RWMutex
+	path      string
+	APIKey    string `json:"api_key"`
+	Hotkey    string `json:"hotkey"`
+	AutoPaste bool   `json:"auto_paste"`
 }
 
 // DefaultDir returns %APPDATA%\SparkEnhance on Windows.
