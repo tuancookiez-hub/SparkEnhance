@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { AppConfig, EnhanceDone } from '../App';
-import { SaveSetup, ScoreOnly, WriteClipboard, SimulatePaste, GetConfig } from '../../wailsjs/go/main/App';
+import { SaveSetup, ScoreOnly, WriteClipboard, SimulatePaste, GetConfig, ListModels } from '../../wailsjs/go/main/App';
 import { WindowHide } from '../../wailsjs/runtime/runtime';
 
 interface Props {
@@ -182,10 +182,33 @@ function SettingsPane({ cfg, onSave, onCancel }: {
 }) {
   const [baseUrl, setBaseUrl] = useState(cfg?.baseUrl ?? 'https://api.gmi-serving.com/v1');
   const [model, setModel] = useState(cfg?.model ?? 'MiniMax-M3');
+  const [models, setModels] = useState<string[]>(cfg?.model ? [cfg.model] : []);
   const [hotkey, setHotkey] = useState(cfg?.hotkey ?? 'ctrl+shift+e');
   const [autoPaste, setAutoPaste] = useState(cfg?.autoPaste ?? false);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  async function handleFetch() {
+    setFetching(true);
+    setFetchError('');
+    try {
+      // Backend uses the stored API key when the second arg is empty.
+      const list = await ListModels(baseUrl.trim(), '');
+      if (list.length > 0) {
+        setModels(list);
+        if (!list.includes(model)) setModel(list[0]);
+      } else {
+        setFetchError('No models returned — check the base URL');
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFetchError(msg);
+    } finally {
+      setFetching(false);
+    }
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -208,11 +231,25 @@ function SettingsPane({ cfg, onSave, onCancel }: {
       </div>
       <div className="field">
         <label>Model</label>
-        <select value={model} onChange={e => setModel(e.target.value)}>
-          <option value="MiniMax-M3">MiniMax-M3</option>
-          <option value="MiniMax-M3.5-Speculative">MiniMax-M3.5-Speculative</option>
-          <option value="gemini-2.0-flash-thinking-exp-01-21">Gemini Thinking</option>
-        </select>
+        <div className="model-row">
+          <select className="model-select" value={model} onChange={e => setModel(e.target.value)}>
+            {models.length === 0 ? (
+              <option value={model}>{model}</option>
+            ) : models.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className={`btn-fetch ${fetching ? 'loading' : ''}`}
+            onClick={handleFetch}
+            disabled={fetching}
+            title="Fetch available models from this base URL"
+          >
+            {fetching ? '↻' : '⊕'}
+          </button>
+        </div>
+        {fetchError && <span className="fetch-error">{fetchError}</span>}
       </div>
       <div className="field">
         <label>Hotkey</label>

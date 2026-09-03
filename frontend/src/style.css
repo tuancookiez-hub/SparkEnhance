@@ -480,3 +480,70 @@ html, body {
 ::-webkit-scrollbar-track { background: var(--bg-base); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* ===== Model row (SetupView + SettingsPane) ===== */
+
+.model-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.model-row .model-select,
+.model-row .model-placeholder {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 0;
+}
+
+.model-row .model-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.model-row .model-placeholder {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.btn-fetch {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 700;
+  width: 40px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.btn-fetch:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-fetch:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-fetch.loading {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.fetch-error {
+  font-size: 11px;
+  color: var(--yellow);
+  font-style: italic;
+}

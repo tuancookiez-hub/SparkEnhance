@@ -22,6 +22,10 @@ export function IsConfigured() {
   return window['go']['main']['App']['IsConfigured']();
 }
 
+export function ListModels(arg1, arg2) {
+  return window['go']['main']['App']['ListModels'](arg1, arg2);
+}
+
 export function ReadClipboard() {
   return window['go']['main']['App']['ReadClipboard']();
 }

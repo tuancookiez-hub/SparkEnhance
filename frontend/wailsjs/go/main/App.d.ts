@@ -12,6 +12,8 @@ export function HideFloatingWindow():Promise<void>;
 
 export function IsConfigured():Promise<boolean>;
 
+export function ListModels(arg1:string,arg2:string):Promise<Array<string>>;
+
 export function ReadClipboard():Promise<string>;
 
 export function SaveSetup(arg1:main.SetupInput):Promise<void>;

@@ -152,6 +152,23 @@ func (a *App) ValidateKey() error {
 	return a.enhancer.ValidateKey(ctx)
 }
 
+// ListModels fetches the model list from a given base URL + API key.
+func (a *App) ListModels(baseURL, apiKey string) ([]string, error) {
+	if baseURL == "" {
+		return nil, fmt.Errorf("base URL is required")
+	}
+	if apiKey == "" && a.cfg.IsConfigured() {
+		apiKey = a.cfg.GetAPIKey()
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("API key is required")
+	}
+	client := enhance.NewClientWithBase(apiKey, baseURL, "")
+	ctx, cancel := context.WithTimeout(a.ctx, 15*1e9)
+	defer cancel()
+	return client.ListModels(ctx)
+}
+
 // EnhanceInput is the binding for the floating UI.
 type EnhanceInput struct {
 	Text string `json:"text"`
