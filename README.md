@@ -8,15 +8,13 @@
 ## What it is
 
 A standalone Windows app that turns messy text into a structured, agent-ready
-brief using MiniMax-M3 on GMI Cloud. Sits in the system tray, listens for
+brief using **MiniMax-M3** on GMI Cloud. Sits in the system tray, listens for
 the global hotkey, reads the current selection, and writes the enhanced
 version back to the clipboard.
 
 ## Demo (3-min)
 
-> Built with **Wails v2** (Go + WebView2). Backend in Go, UI in React/TypeScript.
-
-## What the rewrite looks like
+> Built with **Wails v3** (Go 1.23 + WebView2). Backend in Go, UI in React/TypeScript.
 
 **Input (messy draft):**
 > fix the login flow
@@ -34,6 +32,19 @@ version back to the clipboard.
 > 6. Add rate limiting (5 attempts per minute per IP)
 > 7. Update the OpenAPI spec with the new endpoint and example requests
 
+## What changed in v0.5 (Wails v3 rewrite)
+
+- **True pill bar.** Win32 `SetWindowRgn` clips the window to a 15px
+  rounded rectangle, so the OS only composites a pill — no rectangular
+  DWM border around the CSS-drawn curve.
+- **No grey flash.** `BackgroundTypeSolid` with the pill color pre-painted
+  by WebView2 from t=0.
+- **No secrets in source.** API key loaded from
+  `%APPDATA%\SparkEnhance\config.json` (gitignored) or the
+  `MINIMAX_API_KEY` env var.
+- **Cleaner internals.** Wails v3 with React 18 + Vite + TypeScript on
+  the frontend, native Win32 syscalls for hotkey/clipboard/window-clip.
+
 ## Install
 
 ### Pre-built binary (Windows 10/11 x64)
@@ -49,44 +60,71 @@ version back to the clipboard.
 ### From source
 
 ```bash
-git clone https://github.com/tuancookiez-hub/sparkenhance.git
-cd sparkenhance
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+git clone https://github.com/tuancookiez-hub/SparkEnhance.git
+cd SparkEnhance
+go install github.com/wailsapp/wails/v3/cmd/wails@latest
 wails build -platform windows/amd64
 # Output: build/bin/sparkenhance.exe
+```
+
+The frontend builds automatically as part of `wails build`. To build only
+the frontend during development:
+
+```bash
+cd frontend && npm install && npm run build
 ```
 
 ### Get a GMI Cloud API key
 
 1. Create a free account at <https://console.gmicloud.ai>
-2. Go to API Keys → create a new key
-3. Paste it into SparkEnhance on first launch
-4. Pick the model: **MiniMax-M3** (default), **MiniMax-M3.5-Speculative**, or
-   any other model on the GMI base URL
+2. Go to **API Keys** → create a new key
+3. Paste it into SparkEnhance on first launch (or set `MINIMAX_API_KEY`)
+4. Pick the model: **MiniMax-M3** (default), or any other model on the
+   GMI base URL
+
+## Configuration
+
+The app reads from `%APPDATA%\SparkEnhance\config.json` on Windows
+(`~/.config/SparkEnhance/config.json` on Linux/macOS):
+
+```json
+{
+  "apiKey": "sk-…",
+  "baseURL": "https://api.gmi-serving.com/v1",
+  "model": "MiniMaxAI/MiniMax-M3",
+  "hotkey": "ctrl+shift+e"
+}
+```
+
+The `apiKey` field is gitignored — never commit it. Use the `MINIMAX_API_KEY`
+environment variable in CI or shared environments instead.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  WebView2 window (560×480)                       │
-│  - SetupView: API key + model + base URL + hotkey│
-│  - DashboardView: floating bar + history        │
-│  - SettingsView: edit config, validation         │
+│  Floating bar — 600×56 WebView2 window             │
+│  - Opaque pill bg: #181a26                        │
+│  - Win32 SetWindowRgn clips to 15px rounded rect  │
+│  - States: idle / loading / result / error        │
+│  - Auto-hide after 30s of inactivity              │
 └────────────────┬─────────────────────────────────┘
-                 │ wails bindings (TypeScript ⇄ Go)
+                 │ wails events (TypeScript ⇄ Go)
 ┌────────────────▼─────────────────────────────────┐
-│  Go backend (app.go)                             │
-│  - EnhanceText:   call GMI /v1/chat/completions  │
-│  - GetConfig:     load %APPDATA%\SparkEnhance\…  │
-│  - SaveSetup:     persist + reinstall hotkey     │
-│  - ShowFloating:  position + show WebView2       │
+│  Go backend (main.go)                            │
+│  - runEnhance:   read selection → call GMI → emit│
+│  - showBar/hideBar: position + clip + show       │
+│  - Hotkey:       global Ctrl+Shift+E             │
+│  - Auto-hide loop: 30s timer, reset on activity   │
 └────────────────┬─────────────────────────────────┘
                  │
 ┌────────────────▼─────────────────────────────────┐
-│  internal/platform (Win32)                      │
-│  - RegisterHotKey: global Ctrl+Shift+E           │
-│  - Clipboard:      read, write, Ctrl+C/V sim    │
-│  - Shell_NotifyIcon: system tray + menu         │
+│  internal/ (no secrets stored)                   │
+│  - config:     load/save %APPDATA%\…\config.json │
+│  - enhance:    MiniMax-M3 chat-completions call  │
+│  - platform:   Win32 SetWindowRgn, clipboard,    │
+│                monitor detection, MoveWindowPos  │
+│  - placement:  bar x/y math                      │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -94,23 +132,37 @@ wails build -platform windows/amd64
 
 | Path | Purpose |
 |---|---|
-| `app.go`               | Wails-bound methods callable from React |
-| `main.go`              | Wails bootstrap, embeds frontend/dist |
-| `frontend/src/App.tsx` | Root React component, event handling |
-| `frontend/src/views/SetupView.tsx`     | First-run setup form |
-| `frontend/src/views/DashboardView.tsx` | Main enhance + settings UI |
-| `internal/enhance/`    | GMI Cloud client + score heuristic + cleaner |
-| `internal/config/`     | JSON-on-disk config at `%APPDATA%\SparkEnhance\config.json` |
-| `internal/platform/`   | Win32 hotkey, clipboard, tray |
-| `frontend/wailsjs/`    | Auto-generated TS bindings |
+| `main.go`              | Wails v3 bootstrap, hotkey, bar lifecycle |
+| `configpath.go`        | Cross-platform config dir resolver |
+| `internal/config/`     | JSON config at `%APPDATA%\SparkEnhance\config.json` |
+| `internal/enhance/`    | MiniMax-M3 chat-completions client + system prompt |
+| `internal/platform/`   | Win32 SetWindowRgn, clipboard, monitor detection |
+| `internal/placement/`  | Bar position math (centred on monitor, top of screen) |
+| `frontend/src/App.tsx` | React root — bar screen + settings screen |
+| `frontend/src/main.tsx` | Router — /settings vs / |
+| `frontend/src/style.css` | Pill styling (matches Win32 region) |
 | `build/windows/icon.ico` | 6-resolution app icon |
+
+## Hotkey
+
+Default: **Ctrl+Shift+E**. To change it, edit `config.json` and restart the app.
+
+## Security & privacy
+
+- **API key** is stored locally on disk and never leaves the machine except
+  when sent to the configured `baseURL` as a Bearer token.
+- **Selection text** is sent to the configured `baseURL` only when the hotkey
+  fires — never logged, never persisted.
+- **No telemetry, no analytics, no phone-home.**
+- **`config.json` is gitignored** — make sure it stays that way if you fork.
 
 ## Tests
 
 ```bash
 go test ./...
-# ok  github.com/tuancookiez-hub/sparkenhance/internal/enhance
-#    13 passing (cleaner, scorer, mocked GMI round-trip, key validation)
+# internal/enhance:  cleaner, scorer, mocked GMI round-trip
+# internal/platform: window region, monitor detection
+# internal/placement: bar position bounds
 ```
 
 ## Compared to the Desktop plugin
@@ -121,18 +173,18 @@ go test ./...
 | Where it works | Hermes composer | Any text in any app |
 | Activation | Click sparkle | Ctrl+Shift+E (global) |
 | Output | Replaces composer draft | Clipboard + auto-paste |
-| Binary | Bundled with Desktop | 11.2 MB single .exe |
+| Binary | Bundled with Desktop | 14 MB single .exe |
 | UI tech | React (WebView2) inside Hermes | React (WebView2) standalone |
 
-The rewrite logic — system prompt, cleaner, scorer — is **ported 1:1** from
-the plugin's `prompts.py` and `score.js`.
+The rewrite logic — system prompt + cleaner — is **ported 1:1** from the
+plugin's `prompts.py`.
 
 ## Hackathon submission
 
 - **Track:** 1 (Reasoning)
 - **Models used:** MiniMax-M3 (and 3.5-Speculative)
 - **GMI endpoint:** `https://api.gmi-serving.com/v1/chat/completions`
-- **Public repo:** <https://github.com/tuancookiez-hub/sparkenhance>
+- **Public repo:** <https://github.com/tuancookiez-hub/SparkEnhance>
 
 ## License
 
