@@ -1,5 +1,7 @@
 # SparkEnhance
 
+![SparkEnhance hero banner](assets/hero-banner.jpg)
+
 > Hover-enhance any text in any Windows app into a numbered agent brief.
 > Tray app. **Ctrl+Shift+E**. MiniMax-M3 via GMI Cloud.
 
