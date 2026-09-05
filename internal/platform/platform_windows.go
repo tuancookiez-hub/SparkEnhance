@@ -5,30 +5,27 @@ package platform
 import (
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
+// Lazy imports for Windows native APIs.
 var (
-	user32              = windows.NewLazySystemDLL("user32.dll")
-	gdi32               = windows.NewLazySystemDLL("gdi32.dll")
-	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
-	procGetWindowRect   = user32.NewProc("GetWindowRect")
-	procGetSystemMetrics= user32.NewProc("GetSystemMetrics")
-	procMonitorFromPoint= user32.NewProc("MonitorFromPoint")
-	procGetMonitorInfo  = user32.NewProc("GetMonitorInfoW")
+	user32          = syscall.NewLazyDLL("user32.dll")
+	gdi32           = syscall.NewLazyDLL("gdi32.dll")
+	kernel32        = syscall.NewLazyDLL("kernel32.dll")
+	procGetCursorPos = user32.NewProc("GetCursorPos")
+	procMonitorFromPoint = user32.NewProc("MonitorFromPoint")
+	procGetMonitorInfo = user32.NewProc("GetMonitorInfoW")
+	procGetWindowRect = user32.NewProc("GetWindowRect")
 	procCreateRoundRect = gdi32.NewProc("CreateRoundRectRgn")
-	procSetWindowRgn    = user32.NewProc("SetWindowRgn")
-	procSetWindowPos    = user32.NewProc("SetWindowPos")
-	procOpenClipboard   = user32.NewProc("OpenClipboard")
-	procCloseClipboard  = user32.NewProc("CloseClipboard")
-	procGetClipboardData= user32.NewProc("GetClipboardData")
-	procEmptyClipboard  = user32.NewProc("EmptyClipboard")
-	procSetClipboardData= user32.NewProc("SetClipboardData")
-	procGlobalAlloc    = kernel32.NewProc("GlobalAlloc")
-	procGlobalLock     = kernel32.NewProc("GlobalLock")
-	procGlobalUnlock   = kernel32.NewProc("GlobalUnlock")
-	procSendInput      = user32.NewProc("SendInputW")
+	procSetWindowRgn = user32.NewProc("SetWindowRgn")
+	procOpenClipboard = user32.NewProc("OpenClipboard")
+	procCloseClipboard = user32.NewProc("CloseClipboard")
+	procEmptyClipboard = user32.NewProc("EmptyClipboard")
+	procSetClipboardData = user32.NewProc("SetClipboardData")
+	procGetClipboardData = user32.NewProc("GetClipboardData")
+	procGlobalAlloc = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock = kernel32.NewProc("GlobalUnlock")
 )
 
 type winRect struct{ Left, Top, Right, Bottom int32 }
@@ -42,29 +39,30 @@ type monitorInfoEx struct {
 }
 
 const (
-	cfUnicodeText    = 13
-	gmemMoveable    = 0x0002
-	hwndTop         = 0
-	swpNoActivate   = 0x0010
-	swpShowWindow   = 0x0040
-	inputKeyboard   = 1
-	keyeventfKeyup  = 0x0002
+	cfUnicodeText = 13
+	gmemMoveable  = 0x0002
 )
 
-func primaryMonitorImpl() (Monitor, error) {
-	w, _, _ := procGetSystemMetrics.Call(0)
-	h, _, _ := procGetSystemMetrics.Call(1)
-	return Monitor{Width: int(w), Height: int(h), X: 0, Y: 0}, nil
+// ─── Implementations (called from platform.go via the `Impl` suffix) ───────
+
+func windowsCursorPos() (int, int) {
+	type pt struct{ X, Y int32 }
+	var p pt
+	r, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
+	if r == 0 {
+		return 0, 0
+	}
+	return int(p.X), int(p.Y)
 }
 
-func monitorFromPointImpl(px, py int) (Monitor, error) {
+func windowsMonitorAt(px, py int) (Monitor, error) {
 	hMon, _, _ := procMonitorFromPoint.Call(uintptr(px), uintptr(py))
 	if hMon == 0 {
-		return primaryMonitorImpl()
+		return Monitor{X: 0, Y: 0, Width: 1920, Height: 1080}, nil
 	}
 	var mi monitorInfoEx
 	mi.CbSize = uint32(unsafe.Sizeof(mi))
-	procGetMonitorInfo.Call(hMon, uintptr(unsafe.Pointer(&mi)))
+	_, _, _ = procGetMonitorInfo.Call(hMon, uintptr(unsafe.Pointer(&mi)))
 	return Monitor{
 		X:      int(mi.RcMonitor.Left),
 		Y:      int(mi.RcMonitor.Top),
@@ -73,7 +71,49 @@ func monitorFromPointImpl(px, py int) (Monitor, error) {
 	}, nil
 }
 
-func windowBoundsImpl(hwnd uintptr) (int, int, int, int, bool) {
+func windowsWorkAreaAt(x, y int) (Monitor, error) {
+	mon, err := monitorAtImpl(x, y)
+	if err != nil {
+		return mon, err
+	}
+	hMon, _, _ := procMonitorFromPoint.Call(uintptr(x), uintptr(y))
+	if hMon == 0 {
+		return mon, nil
+	}
+	var mi monitorInfoEx
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if _, _, _ = procGetMonitorInfo.Call(hMon, uintptr(unsafe.Pointer(&mi))); mi.CbSize == 0 {
+		return mon, nil
+	}
+	return Monitor{
+		X:      int(mi.RcWork.Left),
+		Y:      int(mi.RcWork.Top),
+		Width:  int(mi.RcWork.Right - mi.RcWork.Left),
+		Height: int(mi.RcWork.Bottom - mi.RcWork.Top),
+	}, nil
+}
+
+func windowsSetWindowRounded(hwnd uintptr, radius int) error {
+	if hwnd == 0 || radius < 1 {
+		return nil
+	}
+	var r winRect
+	if _, _, _ = procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); r.Right == 0 && r.Bottom == 0 {
+		return nil
+	}
+	w := int(r.Right - r.Left)
+	h := int(r.Bottom - r.Top)
+	hRgn, _, _ := procCreateRoundRect.Call(0, 0, uintptr(w), uintptr(h),
+		uintptr(radius*2), uintptr(radius*2))
+	if hRgn == 0 {
+		return nil
+	}
+	// bRedraw=1; OS owns the region after this call (do NOT DeleteObject)
+	_, _, _ = procSetWindowRgn.Call(hwnd, hRgn, 1)
+	return nil
+}
+
+func windowsWindowBounds(hwnd uintptr) (int, int, int, int, bool) {
 	if hwnd == 0 {
 		return 0, 0, 0, 0, false
 	}
@@ -84,41 +124,19 @@ func windowBoundsImpl(hwnd uintptr) (int, int, int, int, bool) {
 	return int(r.Left), int(r.Top), int(r.Right - r.Left), int(r.Bottom - r.Top), true
 }
 
-func setRoundedRegionImpl(hwnd uintptr, radius int) {
-	if hwnd == 0 || radius < 1 {
-		return
-	}
-	_, _, w, h, ok := windowBoundsImpl(hwnd)
-	if !ok {
-		return
-	}
-	hRgn, _, _ := procCreateRoundRect.Call(0, 0, uintptr(w), uintptr(h), uintptr(radius*2), uintptr(radius*2))
-	if hRgn == 0 {
-		return
-	}
-	procSetWindowRgn.Call(hwnd, hRgn, 1) // OS owns region after this call
-}
-
-func moveWindowTopLeftImpl(hwnd uintptr, x, y, w, h int) {
-	if hwnd == 0 {
-		return
-	}
-	procSetWindowPos.Call(hwnd, hwndTop, uintptr(x), uintptr(y), uintptr(w), uintptr(h), swpNoActivate|swpShowWindow)
-}
-
-func setClipboardImpl(text string) {
+func windowsWriteClipboard(text string) error {
 	utf16, _ := syscall.UTF16FromString(text)
 	bufLen := len(utf16) * 2
 
 	if r, _, _ := procOpenClipboard.Call(0); r == 0 {
-		return
+		return nil
 	}
 	defer procCloseClipboard.Call()
 
 	procEmptyClipboard.Call()
 	hMem, _, _ := procGlobalAlloc.Call(gmemMoveable, uintptr(bufLen+2))
 	if hMem == 0 {
-		return
+		return nil
 	}
 	ptr, _, _ := procGlobalLock.Call(hMem)
 	if ptr != 0 {
@@ -129,11 +147,10 @@ func setClipboardImpl(text string) {
 		procGlobalUnlock.Call(hMem)
 	}
 	procSetClipboardData.Call(uintptr(cfUnicodeText), hMem)
+	return nil
 }
 
-// CaptureSelection reads the current clipboard text. The frontend triggers Ctrl+C
-// before calling this, so the clipboard is pre-populated.
-func CaptureSelection() (string, error) {
+func windowsReadClipboard() (string, error) {
 	if r, _, _ := procOpenClipboard.Call(0); r == 0 {
 		return "", nil
 	}
@@ -149,19 +166,17 @@ func CaptureSelection() (string, error) {
 	}
 	defer procGlobalUnlock.Call(hMem)
 
-	var buf []uint16
 	for i := 0; ; i++ {
 		if i > 524288 { // 1MB safety limit
-			break
+			return "", nil
 		}
 		c := *(*uint16)(unsafe.Pointer(ptr + uintptr(i*2)))
 		if c == 0 {
-			buf = make([]uint16, i)
+			buf := make([]uint16, i)
 			for j := 0; j < i; j++ {
 				buf[j] = *(*uint16)(unsafe.Pointer(ptr + uintptr(j*2)))
 			}
 			return syscall.UTF16ToString(buf), nil
 		}
 	}
-	return "", nil
 }

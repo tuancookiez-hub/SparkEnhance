@@ -1,7 +1,7 @@
 // Package placement computes the floating bar's screen position.
 package placement
 
-import "github.com/wuancookiez-hub/SparkEnhance/internal/platform"
+import "github.com/tuancookiez-hub/SparkEnhance/internal/platform"
 
 // Bar returns the (x, y) top-left corner to centre the bar
 // at the bottom of the primary monitor.

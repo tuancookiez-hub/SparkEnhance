@@ -2,21 +2,25 @@
 
 ![SparkEnhance hero banner](assets/hero-banner.jpg)
 
-> Hover-enhance any text in any Windows app into a numbered agent brief.
+> Hover-enhance any text in any app into a numbered agent brief.
 > Tray app. **Ctrl+Shift+E**. MiniMax-M3 via GMI Cloud.
+> Cross-platform: **Windows 10/11**, **macOS 11+**, **Linux (X11 / Wayland)**.
 
 ![Icon](build/appicon.png)
 
 ## What it is
 
-A standalone Windows app that turns messy text into a structured, agent-ready
-brief using **MiniMax-M3** on GMI Cloud. Sits in the system tray, listens for
-the global hotkey, reads the current selection, and writes the enhanced
-version back to the clipboard.
+A standalone desktop app that turns messy text into a structured,
+agent-ready brief using **MiniMax-M3** on GMI Cloud. Sits in the system
+tray, listens for a global hotkey, reads the current selection, and
+writes the enhanced version back to the clipboard.
 
-## Demo (3-min)
+It runs the same on every desktop OS — same binary shape, same hotkey,
+same UX. The only platform-specific code is a 5-line Win32 `SetWindowRgn`
+call that keeps Windows from drawing a rectangular DWM border around the
+rounded pill.
 
-> Built with **Wails v3** (Go 1.23 + WebView2). Backend in Go, UI in React/TypeScript.
+## Demo
 
 **Input (messy draft):**
 > fix the login flow
@@ -34,98 +38,127 @@ version back to the clipboard.
 > 6. Add rate limiting (5 attempts per minute per IP)
 > 7. Update the OpenAPI spec with the new endpoint and example requests
 
-## What changed in v0.5 (Wails v3 rewrite)
+## Cross-platform story
 
-- **True pill bar.** Win32 `SetWindowRgn` clips the window to a 15px
-  rounded rectangle, so the OS only composites a pill — no rectangular
-  DWM border around the CSS-drawn curve.
-- **No grey flash.** `BackgroundTypeSolid` with the pill color pre-painted
-  by WebView2 from t=0.
-- **No secrets in source.** API key loaded from
-  `%APPDATA%\SparkEnhance\config.json` (gitignored) or the
-  `MINIMAX_API_KEY` env var.
-- **Cleaner internals.** Wails v3 with React 18 + Vite + TypeScript on
-  the frontend, native Win32 syscalls for hotkey/clipboard/window-clip.
+| OS | Bar window | Rounded corners | Hotkey | Clipboard |
+|---|---|---|---|---|
+| **Windows 10/11** | WebView2 | `SetWindowRgn` + CSS | `RegisterHotKey` (Win32) | Win32 `OpenClipboard` |
+| **macOS 11+** | WKWebView | AppKit `NSWindow.cornerRadius` (built-in) | `NSEvent.addGlobalMonitor` | `NSPasteboard` |
+| **Linux (X11)** | WebKitGTK | CSS only (no extra work) | X server key grab | `xclip` / `xsel` |
+| **Linux (Wayland)** | WebKitGTK | CSS only | `org.freedesktop.portal.GlobalShortcuts` | portal D-Bus |
+
+The Wails v3 runtime wraps the platform APIs so the Go source stays the
+same across OSes. Windows-specific code is guarded by `//go:build windows`
+and compiled out on macOS / Linux (becoming a no-op).
 
 ## Install
 
-### Pre-built binary (Windows 10/11 x64)
+### Pre-built binary
 
-```bash
-# Download sparkenhance.exe from the latest release.
-# Double-click to launch. The setup window opens on first run.
-```
+Download `sparkenhance.exe` (Windows), `SparkEnhance.app` (macOS), or
+`sparkenhance` (Linux) from the [latest release](../../releases).
 
-> SparkEnhance requires **WebView2** which is preinstalled on Windows 10
-> (since 2021) and Windows 11.
+| OS | Prerequisite |
+|---|---|
+| Windows | WebView2 (preinstalled on Win 10 since 2021 and on Win 11) |
+| macOS | macOS 11+ (Big Sur) |
+| Linux | WebKit2GTK 2.40+ (Ubuntu 22.04 / Debian 12) or `webkit2gtk-4.1` |
+
+> Linux: install `webkit2gtk-4.1` and `gtk-3` via your package manager
+> (`apt install libwebkit2gtk-4.1-dev build-essential`).
 
 ### From source
+
+**Requirements:** Go 1.26+, Wails v3 CLI, Node.js 18+.
 
 ```bash
 git clone https://github.com/tuancookiez-hub/SparkEnhance.git
 cd SparkEnhance
-go install github.com/wailsapp/wails/v3/cmd/wails@latest
-wails build -platform windows/amd64
-# Output: build/bin/sparkenhance.exe
+
+# Install Wails v3 CLI
+go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+# Build for your current platform
+wails3 build        # uses the included Taskfile.yml
 ```
 
-The frontend builds automatically as part of `wails build`. To build only
-the frontend during development:
+> **Note:** SparkEnhance requires CGo on macOS (AppKit) and Linux (GTK/webkit2gtk).
+> Windows builds are pure Go (`CGO_ENABLED=0`). You can cross-compile the
+> Windows binary from any OS; macOS and Linux builds must be run on their
+> respective OSes.
 
-```bash
-cd frontend && npm install && npm run build
-```
+Output: `build/bin/sparkenhance.exe` (Windows) or
+`build/bin/SparkEnhance.app` (macOS) or `build/bin/sparkenhance` (Linux).
 
 ### Get a GMI Cloud API key
 
 1. Create a free account at <https://console.gmicloud.ai>
-2. Go to **API Keys** → create a new key
-3. Paste it into SparkEnhance on first launch (or set `MINIMAX_API_KEY`)
-4. Pick the model: **MiniMax-M3** (default), or any other model on the
-   GMI base URL
+2. **API Keys** → create a new key
+3. Paste it into SparkEnhance on first launch, **or** set `MINIMAX_API_KEY`
+4. Default model: **MiniMax-M3** (any other GMI model works)
 
 ## Configuration
 
-The app reads from `%APPDATA%\SparkEnhance\config.json` on Windows
-(`~/.config/SparkEnhance/config.json` on Linux/macOS):
+SparkEnhance reads from a per-OS config file:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\SparkEnhance\config.json` |
+| macOS | `~/Library/Application Support/SparkEnhance/config.json` |
+| Linux | `~/.config/SparkEnhance/config.json` |
+
+The file is **gitignored** so it never gets committed.
 
 ```json
 {
   "apiKey": "sk-…",
   "baseURL": "https://api.gmi-serving.com/v1",
   "model": "MiniMaxAI/MiniMax-M3",
-  "hotkey": "ctrl+shift+e"
+  "hotkey": "ctrl+shift+e",
+  "autoPaste": false
 }
 ```
 
-The `apiKey` field is gitignored — never commit it. Use the `MINIMAX_API_KEY`
-environment variable in CI or shared environments instead.
+For CI / shared environments, set `MINIMAX_API_KEY` instead — the app
+falls back to the env var when the config file is missing.
+
+## Hotkey
+
+Default: **`Ctrl+Shift+E`** (`CmdOrCtrl+Shift+E` on macOS).
+
+If the accelerator can't be claimed on Linux Wayland, the desktop
+session's global-shortcut portal will ask you to approve the binding.
+If it's already in use by another app, SparkEnhance will fall back to a
+different combination on the next launch.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Floating bar — 600×56 WebView2 window             │
+│  Floating bar — 600×56 frameless window            │
+│  - WebView2 / WKWebView / WebKit2GTK               │
 │  - Opaque pill bg: #181a26                        │
-│  - Win32 SetWindowRgn clips to 15px rounded rect  │
+│  - macOS: native cornerRadius (built-in)           │
+│  - Win10/11: SetWindowRgn clips to 15px rect      │
+│  - Linux: CSS border-radius (no extra work)       │
 │  - States: idle / loading / result / error        │
 │  - Auto-hide after 30s of inactivity              │
 └────────────────┬─────────────────────────────────┘
-                 │ wails events (TypeScript ⇄ Go)
+                 │ Wails events (TypeScript ⇄ Go)
 ┌────────────────▼─────────────────────────────────┐
 │  Go backend (main.go)                            │
 │  - runEnhance:   read selection → call GMI → emit│
-│  - showBar/hideBar: position + clip + show       │
-│  - Hotkey:       global Ctrl+Shift+E             │
+│  - showBar / dismissBar: position + clip + show  │
+│  - GlobalShortcut.Register: hotkey (cross-OS)   │
 │  - Auto-hide loop: 30s timer, reset on activity   │
 └────────────────┬─────────────────────────────────┘
                  │
 ┌────────────────▼─────────────────────────────────┐
 │  internal/ (no secrets stored)                   │
-│  - config:     load/save %APPDATA%\…\config.json │
+│  - config:     cross-platform config path + JSON │
 │  - enhance:    MiniMax-M3 chat-completions call  │
 │  - platform:   Win32 SetWindowRgn, clipboard,    │
-│                monitor detection, MoveWindowPos  │
+│                monitor detection (build-tagged)   │
 │  - placement:  bar x/y math                      │
 └──────────────────────────────────────────────────┘
 ```
@@ -134,29 +167,28 @@ environment variable in CI or shared environments instead.
 
 | Path | Purpose |
 |---|---|
-| `main.go`              | Wails v3 bootstrap, hotkey, bar lifecycle |
-| `configpath.go`        | Cross-platform config dir resolver |
-| `internal/config/`     | JSON config at `%APPDATA%\SparkEnhance\config.json` |
-| `internal/enhance/`    | MiniMax-M3 chat-completions client + system prompt |
-| `internal/platform/`   | Win32 SetWindowRgn, clipboard, monitor detection |
-| `internal/placement/`  | Bar position math (centred on monitor, top of screen) |
-| `frontend/src/App.tsx` | React root — bar screen + settings screen |
-| `frontend/src/main.tsx` | Router — /settings vs / |
-| `frontend/src/style.css` | Pill styling (matches Win32 region) |
+| `main.go` | Wails v3 bootstrap, hotkey, bar lifecycle |
+| `Taskfile.yml` | Cross-platform build tasks (`task build`, `task dev`) |
+| `build/config.yml` | Wails v3 product metadata + dev-mode task chain |
+| `build/{windows,darwin,linux,ios,android}/Taskfile.yml` | Platform-specific build tasks |
+| `internal/config/` | JSON config at the per-OS `DefaultDir()` path |
+| `internal/enhance/` | MiniMax-M3 chat-completions client + system prompt |
+| `internal/platform/` | Cross-platform stubs + Windows-only `SetWindowRgn`, clipboard, monitor detection |
+| `internal/placement/` | Bar x/y math (centered on cursor's monitor) |
+| `frontend/src/App.tsx` | React root — bar + settings screens |
+| `frontend/src/main.tsx` | Router — `/settings` vs `/` |
+| `frontend/src/style.css` | Pill styling (matches Windows region; pure CSS elsewhere) |
 | `build/windows/icon.ico` | 6-resolution app icon |
-
-## Hotkey
-
-Default: **Ctrl+Shift+E**. To change it, edit `config.json` and restart the app.
+| `assets/hero-banner.jpg` | README hero banner |
 
 ## Security & privacy
 
-- **API key** is stored locally on disk and never leaves the machine except
-  when sent to the configured `baseURL` as a Bearer token.
-- **Selection text** is sent to the configured `baseURL` only when the hotkey
-  fires — never logged, never persisted.
+- **API key** is stored locally on disk and never leaves the machine
+  except as a Bearer token to the configured `baseURL`.
+- **Selection text** is sent to the configured `baseURL` only when the
+  hotkey fires — never logged, never persisted to disk.
 - **No telemetry, no analytics, no phone-home.**
-- **`config.json` is gitignored** — make sure it stays that way if you fork.
+- **`config.json` is gitignored** — fork-safe out of the box.
 
 ## Tests
 
@@ -169,14 +201,15 @@ go test ./...
 
 ## Compared to the Desktop plugin
 
-| | Plugin (Hermes Desktop) | SparkEnhance (this) |
+| | Hermes Desktop plugin | SparkEnhance (this) |
 |---|---|---|
-| Where it runs | Inside Hermes Desktop | Standalone Windows app |
+| Where it runs | Inside Hermes Desktop | Standalone desktop app |
 | Where it works | Hermes composer | Any text in any app |
-| Activation | Click sparkle | Ctrl+Shift+E (global) |
+| Activation | Click sparkle | `Ctrl+Shift+E` (global) |
 | Output | Replaces composer draft | Clipboard + auto-paste |
-| Binary | Bundled with Desktop | 14 MB single .exe |
-| UI tech | React (WebView2) inside Hermes | React (WebView2) standalone |
+| Binary | Bundled with Desktop | 14 MB single .exe / .app / ELF |
+| UI tech | React (WebView2) inside Hermes | React standalone (WebView2 / WKWebView / WebKit2GTK) |
+| Platforms | Windows only | Windows, macOS, Linux |
 
 The rewrite logic — system prompt + cleaner — is **ported 1:1** from the
 plugin's `prompts.py`.

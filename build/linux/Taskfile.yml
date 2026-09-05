@@ -1,0 +1,14 @@
+version: '3'
+includes:
+  common: ../Taskfile.yml
+tasks:
+  build:
+    summary: Builds for linux
+    cmds:
+      - echo "build for linux not implemented yet"
+  run:
+    cmds:
+      - echo "run on linux not implemented yet"
+  package:
+    cmds:
+      - echo "package for linux not implemented yet"

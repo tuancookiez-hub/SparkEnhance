@@ -1,0 +1,14 @@
+version: '3'
+includes:
+  common: ../Taskfile.yml
+tasks:
+  build:
+    summary: Builds for android
+    cmds:
+      - echo "build for android not implemented yet"
+  run:
+    cmds:
+      - echo "run on android not implemented yet"
+  package:
+    cmds:
+      - echo "package for android not implemented yet"

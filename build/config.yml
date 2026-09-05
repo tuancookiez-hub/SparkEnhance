@@ -1,0 +1,41 @@
+# SparkEnhance v3 build config.
+version: '3'
+
+info:
+  companyName: "Tuna"
+  productName: "SparkEnhance"
+  productIdentifier: "com.tuancookiez.sparkenhance"
+  description: "Hover-enhance any text in any app into a numbered agent brief"
+  copyright: "(c) 2026, Tuna"
+  comments: "Built with Wails v3"
+  version: "0.5.0"
+
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir:
+      - .git
+      - node_modules
+      - frontend
+      - bin
+    file:
+      - .DS_Store
+      - .gitignore
+      - .gitkeep
+  executes:
+    - cmd: wails3 task common:install:frontend:deps
+      type: once
+    - cmd: wails3 task common:dev:frontend
+      type: background
+    - cmd: go mod tidy
+      type: blocking
+    - cmd: wails3 task build
+      type: blocking
+    - cmd: wails3 task run
+      type: primary
+
+build:
+  output_dir: "build/bin"
+  output_filename: "sparkenhance.exe"

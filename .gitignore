@@ -15,6 +15,14 @@ frontend/dist/
 # Wails v3 generated frontend bindings
 frontend/bindings/
 
+# Wails v3 v2-era leftover bindings dir (not used by v3)
+frontend/wailsjs/
+
+# Local dev state
+.task/
+.hermes-*
+.hermes-tmp*
+
 # Screenshots / test artifacts
 *.png
 !build/appicon.png

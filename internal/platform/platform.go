@@ -1,93 +1,80 @@
-// Package platform wraps OS-level operations needed by SparkEnhance.
+// Package platform wraps OS-level operations SparkEnhance needs.
 // No secrets, no network calls — pure platform APIs.
+//
+// Cross-platform:
+//   - CursorPos / WorkAreaAt / MonitorAt  — read monitor geometry
+//   - SetWindowRounded                    — round the bar's OS window corners
+//   - WriteClipboard / CaptureSelection  — clipboard read/write
+//
+// Windows-only: SetWindowRounded uses SetWindowRgn + CreateRoundRectRgn
+// (since CSS border-radius alone doesn't clip the OS window on Win10/11).
+// macOS / Linux: no-op — CSS border-radius handles the rounding via
+// WebView2 / WebKit2GTK.
 package platform
 
 import (
 	"runtime"
-	"unsafe"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// ─── Monitor / window geometry ───────────────────────────────────────────────
+// ─── Public types ────────────────────────────────────────────────────────────
 
+// Monitor is a logical display (not necessarily physical).
 type Monitor struct {
-	Width  int
-	Height int
 	X      int
 	Y      int
+	Width  int
+	Height int
 }
 
-type Point struct{ X, Y int }
+// ─── Public API (cross-platform) ─────────────────────────────────────────────
 
-// PrimaryMonitor returns the primary display.
-func PrimaryMonitor() (Monitor, error) {
-	return primaryMonitorImpl()
+// CursorPos returns the current cursor position in screen coords.
+func CursorPos() (int, int) {
+	return cursorPosImpl()
 }
 
-func MonitorFromPoint(px, py int) (Monitor, error) {
-	return monitorFromPointImpl(px, py)
+// WorkAreaAt returns the work area of the monitor containing (x, y).
+// "Work area" excludes the taskbar / dock — the area a floating bar
+// can safely use.
+func WorkAreaAt(x, y int) (Monitor, error) {
+	return workAreaAtImpl(x, y)
 }
 
-// WindowBounds returns (x, y, w, h, ok).
+// MonitorAt returns the monitor containing (x, y).
+func MonitorAt(x, y int) (Monitor, error) {
+	return monitorAtImpl(x, y)
+}
+
+// SetWindowRounded clips the OS window to a rounded rectangle. On Windows
+// this calls SetWindowRgn + CreateRoundRectRgn. On macOS / Linux the
+// WebView2 / WebKit2GTK CSS border-radius handles the visual rounding,
+// so this is a no-op.
+func SetWindowRounded(win application.Window) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	hwnd := uintptr(win.NativeWindow())
+	if hwnd == 0 {
+		return nil
+	}
+	return setWindowRoundedImpl(hwnd, 15)
+}
+
+// WriteClipboard writes text to the system clipboard.
+func WriteClipboard(text string) error {
+	return writeClipboardImpl(text)
+}
+
+// CaptureSelection returns the current selection (assumed to be on
+// the clipboard after the frontend triggers Ctrl+C).
+func CaptureSelection() (string, error) {
+	return readClipboardImpl()
+}
+
+// WindowBounds returns the current screen-space bounds of the bar's
+// native window: (x, y, w, h, ok).
 func WindowBounds(hwnd uintptr) (int, int, int, int, bool) {
 	return windowBoundsImpl(hwnd)
 }
-
-// ─── Rounded corners (Windows only) ──────────────────────────────────────────
-
-// SetRoundedWindowRegion clips the Win32 window to a rounded rectangle.
-// Radius is in pixels. Idempotent — safe to call every position update.
-func SetRoundedWindowRegion(hwnd uintptr, radius int) {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	setRoundedRegionImpl(hwnd, radius)
-}
-
-// MoveWindowTopLeft moves and resizes the window in one call.
-func MoveWindowTopLeft(hwnd uintptr, x, y, w, h int) {
-	moveWindowTopLeftImpl(hwnd, x, y, w, h)
-}
-
-// ─── Clipboard (cross-platform) ──────────────────────────────────────────────
-
-// SetClipboard writes text to the system clipboard.
-func SetClipboard(text string) {
-	setClipboardImpl(text)
-}
-
-// ─── Native window handle from Wails window ─────────────────────────────────
-
-// NativeHandle returns the raw OS window handle as uintptr.
-// On Windows: HWND cast to uintptr.
-// On macOS:   NSWindow * cast to uintptr.
-// On Linux:   GtkWindow * cast to uintptr.
-func NativeHandle(win application.Window) uintptr {
-	if win == nil {
-		return 0
-	}
-	return uintptr(win.NativeWindow())
-}
-
-// ─── Platform implementations (stub for non-Windows; real impls in platform_*.go)
-
-func primaryMonitorImpl() (Monitor, error) {
-	return Monitor{Width: 1920, Height: 1080, X: 0, Y: 0}, nil
-}
-
-func monitorFromPointImpl(px, py int) (Monitor, error) {
-	return primaryMonitorImpl()
-}
-
-func windowBoundsImpl(hwnd uintptr) (int, int, int, int, bool) {
-	return 0, 0, 600, 56, false
-}
-
-func setRoundedRegionImpl(hwnd uintptr, radius int) {}
-
-func moveWindowTopLeftImpl(hwnd uintptr, x, y, w, h int) {}
-
-func setClipboardImpl(text string) {}
-
-var _ = unsafe.Pointer // suppress unused import on non-Windows
