@@ -1,108 +1,149 @@
-import { useState, useEffect } from 'react';
-import { EventsOn } from '../wailsjs/runtime/runtime';
-import { IsConfigured, GetConfig, SaveSetup, CopyOutput, DismissBar, QuitApp, ValidateKey, ListModels, ScoreOnly } from '../wailsjs/go/main/App';
-import FloatingBar from './views/FloatingBar';
-import SettingsView from './views/SettingsView';
-import SetupView from './views/SetupView';
-import './style.css';
+// SparkEnhance — React frontend (Wails v3).
+// Talks to the Go side via window.go (auto-injected by wails dev server).
+import { useState, useEffect } from "react";
+import { Events } from "@wails/runtime";
 
-export interface AppConfig {
-  baseUrl: string;
-  model: string;
-  hotkey: string;
-  autoPaste: boolean;
-  hasKey: boolean;
-}
-
-export interface EnhanceDone {
-  selection: string;
-  output: string;
-  before: number;
-  after: number;
-}
-
-type Phase = 'idle' | 'capturing' | 'enhancing' | 'result' | 'error';
-
-export default function App() {
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  const [cfg, setCfg] = useState<AppConfig | null>(null);
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [selection, setSelection] = useState('');
-  const [result, setResult] = useState<EnhanceDone | null>(null);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
+export function BarScreen() {
+  const [state, setState] = useState<"idle" | "loading" | "result" | "error">("idle");
+  const [sel, setSel] = useState("");
+  const [result, setResult] = useState("");
+  const [errMsg, setErrMsg] = useState("");
 
   useEffect(() => {
-    IsConfigured().then(setConfigured);
-    GetConfig().then(c => setCfg(c as AppConfig));
-
-    // The backend drives phase changes via events after the hotkey fires.
-    EventsOn('enhance:start', (text: string) => {
-      setSelection(text);
-      setResult(null);
-      setErrorMsg('');
-      setPhase('enhancing');
-    });
-    EventsOn('enhance:done', (data: EnhanceDone) => {
-      setResult(data);
-      setPhase('result');
-    });
-    EventsOn('enhance:error', (msg: string) => {
-      setErrorMsg(msg);
-      setPhase('error');
-    });
+    const off = [
+      Events.On("enhance:start", (data: any) => {
+        setSel(data.selection ?? "");
+        setState("loading");
+        Events.Emit("bar:user-activity");
+      }),
+      Events.On("enhance:result", (data: any) => {
+        setResult(data.result ?? "");
+        setState("result");
+        Events.Emit("bar:user-activity");
+      }),
+      Events.On("enhance:error", (data: any) => {
+        setErrMsg(data.error ?? "Unknown error");
+        setState("error");
+        Events.Emit("bar:user-activity");
+      }),
+      Events.On("enhance:idle", () => setState("idle")),
+    ];
+    return () => off.forEach(f => f());
   }, []);
 
-  async function handleSetup(values: { apiKey: string; baseUrl: string; model: string; hotkey: string; autoPaste: boolean }) {
-    await SaveSetup(values);
-    setCfg(await GetConfig() as AppConfig);
-    setConfigured(true);
-  }
-
-  function handleCopyAndDismiss() {
-    if (!result) return;
-    CopyOutput(result.output);
-    setPhase('idle');
-  }
-
-  function handleDismiss() {
-    DismissBar();
-    setPhase('idle');
-  }
-
-  function handleQuit() {
-    QuitApp();
-  }
-
-  if (configured === null) return null;
-  if (!configured) {
-    return <SetupView onSubmit={handleSetup} />;
-  }
-
-  if (showSettings) {
+  if (state === "loading") {
     return (
-      <SettingsView
-        cfg={cfg}
-        onSaved={async () => { setCfg(await GetConfig() as AppConfig); setShowSettings(false); }}
-        onBack={() => setShowSettings(false)}
-      />
+      <div className="screen">
+        <div className="bar">
+          <span className="spinner" />
+          <span className="label">{sel || "Enhancing…"}</span>
+        </div>
+      </div>
     );
   }
 
+  if (state === "error") {
+    return (
+      <div className="screen">
+        <div className="bar">
+          <span className="label error">{errMsg}</span>
+          <div className="actions">
+            <button className="btn" onClick={() => setState("idle")}>Dismiss</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "result") {
+    return (
+      <div className="screen">
+        <div className="bar">
+          <span className="label">
+            <div className="result">{result}</div>
+          </span>
+          <div className="actions">
+            <button className="btn primary" onClick={copyResult}>Copy</button>
+            <button className="btn danger" onClick={dismiss}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // idle
   return (
-    <div className="app-root floating">
-      <FloatingBar
-        phase={phase}
-        selection={selection}
-        result={result}
-        errorMsg={errorMsg}
-        cfg={cfg}
-        onCopy={handleCopyAndDismiss}
-        onDismiss={handleDismiss}
-        onSettings={() => setShowSettings(true)}
-        onQuit={handleQuit}
-      />
+    <div className="screen">
+      <div className="bar">
+        <span className="label">Hover any selected text, press Ctrl+Shift+E</span>
+      </div>
+    </div>
+  );
+
+  async function copyResult() {
+    try {
+      await navigator.clipboard.writeText(result);
+    } catch {}
+  }
+  function dismiss() {
+    setState("idle");
+    Events.Emit("bar:user-activity");
+  }
+}
+
+export function SettingsScreen() {
+  const [apiKey, setApiKey] = useState("");
+  const [baseURL, setBaseURL] = useState("https://api.gmi-serving.com/v1");
+  const [model, setModel] = useState("MiniMaxAI/MiniMax-M3");
+  const [status, setStatus] = useState("");
+  const [statusKind, setStatusKind] = useState<"ok" | "err" | "">("");
+
+  async function save() {
+    try {
+      // @ts-ignore — window.go is auto-injected
+      await window.go.config.SaveConfig({ apiKey, baseURL, model });
+      setStatus("Saved.");
+      setStatusKind("ok");
+    } catch (e: any) {
+      setStatus("Save failed: " + (e?.message || String(e)));
+      setStatusKind("err");
+    }
+  }
+
+  return (
+    <div className="settings">
+      <h1>SparkEnhance</h1>
+      <p className="hint">
+        Hover-enhance any selected text using MiniMax M3 on GMI Cloud. Your API key
+        is stored locally in <code>%APPDATA%\SparkEnhance\config.json</code> and is
+        never sent to anywhere except <code>{baseURL}</code>.
+      </p>
+
+      <div className="row">
+        <label>API Key</label>
+        <input
+          type="password"
+          value={apiKey}
+          onChange={e => setApiKey(e.target.value)}
+          placeholder="sk-…"
+        />
+      </div>
+
+      <div className="row">
+        <label>Base URL</label>
+        <input value={baseURL} onChange={e => setBaseURL(e.target.value)} />
+      </div>
+
+      <div className="row">
+        <label>Model</label>
+        <input value={model} onChange={e => setModel(e.target.value)} />
+      </div>
+
+      <div className="footer">
+        {status && <span className={"status " + statusKind}>{status}</span>}
+        <span className="spacer" />
+        <button className="btn primary" onClick={save}>Save</button>
+      </div>
     </div>
   );
 }
-

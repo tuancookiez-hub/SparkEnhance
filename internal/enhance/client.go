@@ -1,3 +1,7 @@
+// Package enhance calls the MiniMax M3 API to transform raw text into
+// a structured numbered brief.
+//
+// No secrets are stored here. The API key is passed in at construction time.
 package enhance
 
 import (
@@ -8,209 +12,91 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
-const (
-	gmiBaseURL = "https://api.gmi-serving.com/v1"
-	modelName  = "MiniMax-M3"
-)
+// ─── Client ─────────────────────────────────────────────────────────────────
 
-// Client calls the GMI Cloud OpenAI-compatible endpoint.
 type Client struct {
-	apiKey   string
-	baseURL  string
-	model    string
-	httpCL   *http.Client
-	timeout  time.Duration
+	apiKey  string
+	baseURL string
+	model   string
+	httpClient *http.Client
 }
 
-// NewClient returns a GMI Cloud client. apiKey must be set before use.
-func NewClient(apiKey string) *Client {
-	return NewClientWithBase(apiKey, gmiBaseURL, modelName)
-}
-
-// NewClientWithBase lets the caller override the base URL and model name
-// (used when the user switches provider in Settings).
-func NewClientWithBase(apiKey, baseURL, model string) *Client {
+// New returns a client configured with the given credentials.
+// If any argument is empty, New will use a sensible default.
+func New(apiKey, baseURL, model string) *Client {
+	if baseURL == "" {
+		baseURL = "https://api.gmi-serving.com/v1"
+	}
+	if model == "" {
+		model = "MiniMaxAI/MiniMax-M3"
+	}
 	return &Client{
-		apiKey: apiKey,
-		baseURL: baseURL,
-		model: model,
-		httpCL: &http.Client{
-			Timeout: 60 * time.Second,
-		},
-		timeout: 90 * time.Second,
+		apiKey:    apiKey,
+		baseURL:   strings.TrimSuffix(baseURL, "/"),
+		model:     model,
+		httpClient: &http.Client{Timeout: 90e9},
 	}
 }
 
-// BaseURL returns the configured base URL (for tests/diagnostics).
-func (c *Client) BaseURL() string { return c.baseURL }
+// Enhance sends the raw selection to the model and returns the formatted brief.
+func (c *Client) Enhance(ctx context.Context, text string) (string, error) {
+	systemPrompt := `You are an expert writing assistant. Transform the user's raw text into a clean, numbered agent brief.
 
-// Model returns the configured model name (for tests/diagnostics).
-func (c *Client) Model() string { return c.model }
-
-// EnhanceRequest is the input to the enhance flow.
-type EnhanceRequest struct {
-	Input string
-}
-
-// EnhanceResult is the output of the enhance flow.
-type EnhanceResult struct {
-	Output  string
-	Score   int
-	Raw     string // un-cleaned output for debugging
-}
-
-// Enhance rewrites rawText into an agent-quality brief using M3.
-// It returns the cleaned text, a quality score, and any error.
-func (c *Client) Enhance(ctx context.Context, rawText string) (*EnhanceResult, error) {
-	if strings.TrimSpace(rawText) == "" {
-		return nil, fmt.Errorf("input text is empty")
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	messages := []map[string]any{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": UserMessage(rawText)},
-	}
+Format rules:
+- Start each point with "1.", "2.", "3." etc (no other numbering)
+- Each point must be self-contained and actionable
+- Preserve the original intent exactly — no hallucinations
+- Max 7 points total
+- Output only the numbered list — no preamble, no follow-up offer
+- Language: match the input language`
 
 	payload := map[string]any{
-		"model":    c.model,
-		"messages": messages,
+		"model": c.model,
+		"messages": []map[string]any{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user",   "content": text},
+		},
+		"max_tokens": 1024,
+		"temperature": 0.3,
 	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return "", fmt.Errorf("request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpCL.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("GMI API returned %d: %s", resp.StatusCode, string(b))
-	}
-
-	var gmiResp gmiChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&gmiResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	raw, err := gmiResp.Content()
-	if err != nil {
-		return nil, fmt.Errorf("extract content: %w", err)
-	}
-
-	cleaned := Clean(raw)
-	if cleaned == "" {
-		return nil, fmt.Errorf("model returned empty output")
-	}
-
-	return &EnhanceResult{
-		Output: cleaned,
-		Score:  Score(cleaned),
-		Raw:    raw,
-	}, nil
-}
-
-// gmiChatResponse mirrors the OpenAI chat/completions response shape.
-type gmiChatResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index        int `json:"index"`
-		Message      struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
-}
-
-// Content extracts the assistant message string from the GMI response.
-func (r *gmiChatResponse) Content() (string, error) {
-	if len(r.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
-	}
-	return r.Choices[0].Message.Content, nil
-}
-
-// ValidateKey checks whether the API key is valid by hitting the models endpoint.
-func (c *Client) ValidateKey(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
-	if err != nil {
-		return err
-	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	resp, err := c.httpCL.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("validation request failed: %w", err)
+		return "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("invalid API key")
-	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// ListModels fetches available model IDs from the /v1/models endpoint.
-func (c *Client) ListModels(ctx context.Context) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpCL.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("models request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("invalid API key")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
 	}
 
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+	var reply struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode models response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
 	}
-	ids := make([]string, 0, len(body.Data))
-	for _, m := range body.Data {
-		ids = append(ids, m.ID)
+	if len(reply.Choices) == 0 {
+		return "", fmt.Errorf("empty response from API")
 	}
-	return ids, nil
+	return strings.TrimSpace(reply.Choices[0].Message.Content), nil
 }

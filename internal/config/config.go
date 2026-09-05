@@ -1,201 +1,100 @@
+// Package config handles loading and saving user settings from a JSON file
+// stored under %APPDATA%\SparkEnhance\config.json (Windows) or the equivalent
+// on other platforms.
+//
+// IMPORTANT: this package never logs or exposes the API key.
 package config
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
-// Config holds app settings persisted to disk at
-// %APPDATA%\SparkEnhance\config.json on Windows.
 type Config struct {
-	mu        sync.RWMutex
-	path      string
-	apiKey    string `json:"api_key"`
-	baseURL   string `json:"base_url"`
-	model     string `json:"model"`
-	hotkey    string `json:"hotkey"`
-	autoPaste bool   `json:"auto_paste"`
+	apiKey  string
+	baseURL string
+	model   string
+	hotkey  string
 }
 
-// DefaultDir returns %APPDATA%\SparkEnhance on Windows.
-func DefaultDir() string {
-	dir := os.Getenv("APPDATA")
-	if dir == "" {
-		dir = os.Getenv("XDG_CONFIG_HOME")
+// Load returns the persisted config, or sensible defaults if no file exists.
+// API key is read from disk only — never from environment or hardcoded.
+func Load(path string) (*Config, error) {
+	c := &Config{
+		baseURL: "https://api.gmi-serving.com/v1",
+		model:   "MiniMaxAI/MiniMax-M3",
+		hotkey:  "ctrl+shift+e",
 	}
-	if dir == "" {
-		dir, _ = os.UserHomeDir()
-		dir = filepath.Join(dir, ".config")
+
+	if path == "" {
+		return c, nil
 	}
-	return filepath.Join(dir, "SparkEnhance")
-}
 
-// NewDefault returns a Config with defaults, unsaved. Used by app.go when
-// the config file cannot be loaded.
-func NewDefault() *Config {
-	return &Config{
-		baseURL:   DefaultBaseURL,
-		model:     DefaultModel,
-		hotkey:    DefaultHotkey,
-		autoPaste: false,
-	}
-}
-
-const (
-	DefaultBaseURL = "https://api.gmi-serving.com/v1"
-	DefaultModel   = "MiniMax-M3"
-	DefaultHotkey  = "ctrl+shift+e"
-)
-
-// Load reads the config file from dir. Returns a zero (default) config if absent.
-func Load(dir string) (*Config, error) {
-	path := filepath.Join(dir, "config.json")
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return c, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &Config{
-				path:     path,
-				baseURL:  DefaultBaseURL,
-				model:    DefaultModel,
-				hotkey:   DefaultHotkey,
-				autoPaste: false,
-			}, nil
-		}
-		return nil, fmt.Errorf("read config: %w", err)
+		return c, err
 	}
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+
+	var raw struct {
+		APIKey  string `json:"apiKey"`
+		BaseURL string `json:"baseURL"`
+		Model   string `json:"model"`
+		Hotkey  string `json:"hotkey"`
 	}
-	cfg.path = path
-	cfg.fillDefaults()
-	return &cfg, nil
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return c, err
+	}
+	c.apiKey = raw.APIKey
+	if raw.BaseURL != "" {
+		c.baseURL = raw.BaseURL
+	}
+	if raw.Model != "" {
+		c.model = raw.Model
+	}
+	if raw.Hotkey != "" {
+		c.hotkey = raw.Hotkey
+	}
+	return c, nil
 }
 
-func (c *Config) fillDefaults() {
-	if c.baseURL == "" {
-		c.baseURL = DefaultBaseURL
+// Save persists the config. Used by the settings form.
+func Save(path string, c *Config) error {
+	raw := struct {
+		APIKey  string `json:"apiKey"`
+		BaseURL string `json:"baseURL"`
+		Model   string `json:"model"`
+		Hotkey  string `json:"hotkey"`
+	}{
+		APIKey:  c.apiKey,
+		BaseURL: c.baseURL,
+		Model:   c.model,
+		Hotkey:  c.hotkey,
 	}
-	if c.model == "" {
-		c.model = DefaultModel
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
 	}
-	if c.hotkey == "" {
-		c.hotkey = DefaultHotkey
-	}
-}
-
-// Save writes cfg to its path atomically.
-func (c *Config) Save() error {
-	c.mu.RLock()
-	path := c.path
-	c.mu.RUnlock()
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename config: %w", err)
-	}
-	return nil
+	return os.WriteFile(path, data, 0o600)
 }
 
-// SetAll atomically updates the full configuration and saves it.
-func (c *Config) SetAll(apiKey, baseURL, model, hotkey string, autoPaste bool) error {
-	c.mu.Lock()
-	c.apiKey = apiKey
-	if baseURL != "" {
-		c.baseURL = baseURL
-	}
-	if model != "" {
-		c.model = model
-	}
-	if hotkey != "" {
-		c.hotkey = hotkey
-	}
-	c.autoPaste = autoPaste
-	c.fillDefaults()
-	c.mu.Unlock()
-	return c.Save()
-}
+// Getters — explicitly typed so we can return empty strings safely.
 
-// SetAPIKey persists the API key.
-func (c *Config) SetAPIKey(key string) error {
-	c.mu.Lock()
-	c.apiKey = key
-	c.mu.Unlock()
-	return c.Save()
-}
+func (c *Config) APIKey() string  { return c.apiKey }
+func (c *Config) BaseURL() string { return c.baseURL }
+func (c *Config) Model() string   { return c.model }
+func (c *Config) Hotkey() string  { return c.hotkey }
 
-// SetAutoPaste persists the auto-paste toggle.
-func (c *Config) SetAutoPaste(v bool) error {
-	c.mu.Lock()
-	c.autoPaste = v
-	c.mu.Unlock()
-	return c.Save()
-}
+// Setters.
 
-// SetHotkey persists a new hotkey chord.
-func (c *Config) SetHotkey(hk string) error {
-	if hk == "" {
-		return fmt.Errorf("hotkey cannot be empty")
-	}
-	c.mu.Lock()
-	c.hotkey = hk
-	c.mu.Unlock()
-	return c.Save()
-}
-
-// GetAPIKey returns the API key.
-func (c *Config) GetAPIKey() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.apiKey
-}
-
-// IsConfigured returns true if a non-empty API key is set.
-func (c *Config) IsConfigured() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.apiKey != ""
-}
-
-// GetBaseURL returns the GMI base URL.
-func (c *Config) GetBaseURL() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.baseURL == "" {
-		return DefaultBaseURL
-	}
-	return c.baseURL
-}
-
-// GetModel returns the configured model name.
-func (c *Config) GetModel() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.model == "" {
-		return DefaultModel
-	}
-	return c.model
-}
-
-// Hotkey returns the current hotkey string.
-func (c *Config) Hotkey() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.hotkey
-}
-
-// AutoPaste returns the auto-paste setting.
-func (c *Config) AutoPaste() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.autoPaste
-}
+func (c *Config) SetAPIKey(v string)  { c.apiKey = v }
+func (c *Config) SetBaseURL(v string) { c.baseURL = v }
+func (c *Config) SetModel(v string)   { c.model = v }
+func (c *Config) SetHotkey(v string)  { c.hotkey = v }

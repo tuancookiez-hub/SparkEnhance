@@ -1,10 +1,15 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import './style.css';
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { BarScreen, SettingsScreen } from "./App";
+import "./style.css";
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+function Router() {
+  const path = window.location.pathname;
+  if (path.includes("settings")) {
+    return <SettingsScreen />;
+  }
+  return <BarScreen />;
+}
+
+const root = createRoot(document.getElementById("root")!);
+root.render(<Router />);

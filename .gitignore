@@ -1,3 +1,33 @@
+# Build outputs
 build/bin
-node_modules
-frontend/dist
+build/darwin/Info.dev.plist
+build/windows/installer/tmp
+
+# Go
+bin/
+*.exe
+*.exe~
+
+# Node
+node_modules/
+frontend/dist/
+
+# Wails v3 generated frontend bindings
+frontend/bindings/
+
+# Screenshots / test artifacts
+*.png
+!build/appicon.png
+!build/appicon.icon/Assets/wails_icon_vector.svg
+
+# Logs
+*.log
+
+# Secrets / user config — NEVER commit
+.env
+.env.local
+config.json
+config.local.json
+api_key*
+*.key
+secrets/
